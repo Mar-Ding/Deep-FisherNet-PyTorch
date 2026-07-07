@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--year", default="2007")
     parser.add_argument("--image-set", default="trainval")
     parser.add_argument("--download", action="store_true")
-    parser.add_argument("--backbone", choices=("alexnet", "resnet101"), default="alexnet")
+    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101"), default="alexnet")
     parser.add_argument("--image-size", type=int, default=448)
     parser.add_argument("--train-scales", type=int, nargs="+")
     parser.add_argument("--hflip-prob", type=float, default=0.0)

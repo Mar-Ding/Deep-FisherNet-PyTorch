@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-set", default="trainval")
     parser.add_argument("--val-set", default="test")
     parser.add_argument("--download", action="store_true")
-    parser.add_argument("--backbone", choices=("alexnet", "resnet101"), default="alexnet")
+    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101"), default="alexnet")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--optimizer", choices=("adamw", "sgd"), default="sgd")
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fisher-bias-lr", type=float)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--grad-accum-steps", type=int, default=8)
+    parser.add_argument("--grad-accum-steps", type=int, default=2)
     parser.add_argument("--lr-step-ratio", type=float, default=0.6)
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--image-size", type=int, default=448)
@@ -200,6 +200,7 @@ def build_optimizer(model: torch.nn.Module, args: argparse.Namespace) -> torch.o
     if args.optimizer == "sgd":
         return torch.optim.SGD(
             param_groups,
+            lr=args.lr,  # fallback, per-group lr takes precedence
             momentum=args.momentum,
             weight_decay=args.weight_decay,
         )

@@ -39,8 +39,24 @@ PASCAL_CLASSES = (
 CLASS_TO_INDEX = {name: idx for idx, name in enumerate(PASCAL_CLASSES)}
 
 
+def load_and_preprocess(image: Image.Image, image_size: int) -> Tensor:
+    """Resize, tensorise, and normalise a single image."""
+    image = image.convert("RGB")
+    image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+    tensor = TF.to_tensor(image)
+    tensor = TF.normalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    return tensor
+
+
 class VOCClassification(Dataset):
-    """VOCDetection wrapper that returns multi-label targets and dense patch boxes."""
+    """VOCDetection wrapper that returns multi-label targets and dense patch boxes.
+
+    Supports:
+      - ``train_scales``: randomly pick a scale per sample for multi-scale training.
+      - ``hflip_prob``: horizontal flip augmentation.
+      - ``test_scales``: if set (eval mode), images are returned at the ``image_size``
+        but ``test_scales`` is stored in the sample for downstream multi-scale processing.
+    """
 
     def __init__(
         self,
@@ -49,6 +65,7 @@ class VOCClassification(Dataset):
         image_set: str = "trainval",
         image_size: int = 448,
         train_scales: tuple[int, ...] | None = None,
+        test_scales: tuple[int, ...] | None = None,
         hflip_prob: float = 0.0,
         patch_sizes: tuple[int, ...] = (96, 128, 192, 256),
         patch_stride: int = 64,
@@ -63,6 +80,7 @@ class VOCClassification(Dataset):
         )
         self.image_size = image_size
         self.train_scales = train_scales
+        self.test_scales = test_scales
         self.hflip_prob = hflip_prob
         self.patch_sizes = patch_sizes
         self.patch_stride = patch_stride
@@ -74,16 +92,20 @@ class VOCClassification(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         image, target = self.dataset[index]
         image = image.convert("RGB")
-        image_size = random.choice(self.train_scales) if self.train_scales else self.image_size
-        image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
-        if self.hflip_prob > 0 and random.random() < self.hflip_prob:
-            image = TF.hflip(image)
+
+        # Training mode: multi-scale augmentation
+        if self.train_scales is not None:
+            image_size = random.choice(self.train_scales)
+            image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+            if self.hflip_prob > 0 and random.random() < self.hflip_prob:
+                image = TF.hflip(image)
+        else:
+            image_size = self.image_size
+            image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+
         tensor = TF.to_tensor(image)
-        tensor = TF.normalize(
-            tensor,
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
-        )
+        tensor = TF.normalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+
         labels = self._multi_hot(target)
         boxes = make_dense_patch_boxes(
             height=image_size,
@@ -97,6 +119,7 @@ class VOCClassification(Dataset):
             "labels": labels,
             "boxes": boxes,
             "image_id": target["annotation"]["filename"],
+            "test_scales": self.test_scales,  # None for training, tuple for eval
         }
 
     @staticmethod

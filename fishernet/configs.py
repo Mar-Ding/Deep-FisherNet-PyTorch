@@ -30,6 +30,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "alexnet-paper-like": {
         "backbone": "alexnet",
+        "epochs": 10,
         "optimizer": "sgd",
         "lr": 1e-3,
         "backbone_lr": 1e-3,
@@ -49,8 +50,35 @@ PRESETS: dict[str, dict[str, Any]] = {
         "patch_dim": 256,
         "num_components": 32,
     },
+    "vgg16-paper-like": {
+        # Exact hyperparameters from the NIPS 2016 paper (Section 4.1)
+        "backbone": "vgg16",
+        "epochs": 16,  # 40k iters × batch=2 / 5011 images ≈ 16 epochs
+        "batch_size": 1,
+        "optimizer": "sgd",
+        "lr": 1e-3,       # backbone base_lr
+        "backbone_lr": 1e-3,
+        "classifier_lr": 1e-1,       # paper: 0.1 for new fc layers
+        "classifier_bias_lr": 2e-1,  # 2× rule for bias
+        "fisher_lr": 1e-4,           # paper: 0.0001
+        "fisher_bias_lr": 2e-4,      # 2× rule for bias
+        "momentum": 0.9,
+        "weight_decay": 5e-4,
+        "grad_accum_steps": 2,       # batch=1 × accum=2 → effective batch=2 (matches paper)
+        "lr_step_ratio": 0.6,        # LR drops at 60% of total epochs
+        "lr_gamma": 0.1,
+        "train_scales": [480, 576, 688, 864, 1200],  # paper's 5 scales
+        "hflip_prob": 0.5,
+        "patch_sizes": [64, 96, 128, 160, 192, 224, 256],  # paper: 7 scales
+        "patch_stride": 32,
+        "max_patches": 800,
+        "patch_dim": 256,            # paper: 256-dim reduction
+        "num_components": 32,        # paper: K=32
+        "roi_output_size": 7,        # VGG16 fc6 expects 512×7×7
+    },
     "official-res101-like": {
         "backbone": "resnet101",
+        "epochs": 10,
         "optimizer": "sgd",
         "lr": 1e-3,
         "backbone_lr": 1e-3,

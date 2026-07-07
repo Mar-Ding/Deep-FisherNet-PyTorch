@@ -15,6 +15,9 @@ data/VOCdevkit/
 # Outputs
 outputs/
 
+# Temp
+tmp/
+
 # IDE
 .vscode/
 .idea/

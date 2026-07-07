@@ -3,7 +3,7 @@ from typing import List, Optional
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
-from torchvision.models import AlexNet_Weights, ResNet101_Weights, alexnet, resnet101
+from torchvision.models import AlexNet_Weights, ResNet101_Weights, VGG16_Weights, alexnet, resnet101, vgg16
 from torchvision.ops import roi_align
 
 from .fisher_layer import FisherLayer
@@ -114,6 +114,94 @@ class AlexNetFisherNet(nn.Module):
         return torch.cat(rois, dim=0)
 
 
+class VGG16FisherNet(nn.Module):
+    """VGG-16 patch feature extractor plus differentiable Fisher aggregation.
+
+    Matches the paper's VGG16-based FisherNet:
+      - Removes pool5 (last MaxPool) so conv feature map is at 1/16 scale.
+      - Uses pre-trained fc6, fc7, then a new 256-dim reduction layer.
+      - Fisher Layer: K=32, D=256 → FV dim = 16384.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 20,
+        patch_dim: int = 256,
+        num_components: int = 32,
+        pretrained: bool = True,
+        learn_priors: bool = False,
+        roi_output_size: int = 7,
+    ) -> None:
+        super().__init__()
+        weights = VGG16_Weights.IMAGENET1K_V1 if pretrained else None
+        base = vgg16(weights=weights)
+        # Remove last MaxPool2d (pool5) so spatial stride is 1/16 instead of 1/32
+        self.features = base.features[:-1]
+        self.roi_output_size = roi_output_size
+
+        # fc6, fc7, then dimension-reduction head
+        self.patch_mlp = nn.Sequential(
+            base.classifier[0],   # Linear(25088, 4096)
+            base.classifier[1],   # ReLU
+            base.classifier[2],   # Dropout(0.5)
+            base.classifier[3],   # Linear(4096, 4096)
+            base.classifier[4],   # ReLU
+            base.classifier[5],   # Dropout(0.5)
+            nn.Linear(4096, patch_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.fisher = FisherLayer(
+            feature_dim=patch_dim,
+            num_components=num_components,
+            learn_priors=learn_priors,
+        )
+        self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
+
+    def forward(
+        self,
+        images: Tensor,
+        boxes: List[Tensor],
+        return_features: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        batch_features, mask = self.extract_patch_features(images, boxes)
+        fisher_features = self.fisher(batch_features, mask=mask)
+        logits = self.classifier(fisher_features)
+        if return_features:
+            return logits, fisher_features
+        return logits
+
+    def extract_patch_features(self, images: Tensor, boxes: List[Tensor]) -> tuple[Tensor, Tensor]:
+        conv = self.features(images)
+        rois = AlexNetFisherNet._make_feature_rois(
+            boxes, images.shape[-2:], conv.shape[-2:], images.device
+        )
+        if rois.numel() == 0:
+            raise ValueError("at least one patch box is required")
+        pooled = roi_align(
+            conv,
+            rois,
+            output_size=(self.roi_output_size, self.roi_output_size),
+            spatial_scale=1.0,
+            sampling_ratio=-1,
+            aligned=True,
+        )
+        patch_features = self.patch_mlp(torch.flatten(pooled, 1))
+        patch_features = F.normalize(patch_features, p=2, dim=1)
+
+        counts = [b.shape[0] for b in boxes]
+        max_count = max(counts)
+        batch_size = images.shape[0]
+        batch_features = patch_features.new_zeros(batch_size, max_count, patch_features.shape[-1])
+        mask = torch.zeros(batch_size, max_count, dtype=torch.bool, device=images.device)
+        start = 0
+        for batch_idx, count in enumerate(counts):
+            end = start + count
+            batch_features[batch_idx, :count] = patch_features[start:end]
+            mask[batch_idx, :count] = True
+            start = end
+        return batch_features, mask
+
+
 class ResNetFisherNet(nn.Module):
     """ResNet-101 patch feature extractor plus differentiable Fisher aggregation."""
 
@@ -168,7 +256,9 @@ class ResNetFisherNet(nn.Module):
 
     def extract_patch_features(self, images: Tensor, boxes: List[Tensor]) -> tuple[Tensor, Tensor]:
         conv = self.features(images)
-        rois = AlexNetFisherNet._make_feature_rois(boxes, images.shape[-2:], conv.shape[-2:], images.device)
+        rois = AlexNetFisherNet._make_feature_rois(
+            boxes, images.shape[-2:], conv.shape[-2:], images.device
+        )
         if rois.numel() == 0:
             raise ValueError("at least one patch box is required")
         pooled = roi_align(
@@ -210,6 +300,14 @@ def build_fishernet(
             num_components=num_components,
             pretrained=pretrained,
             roi_output_size=6 if roi_output_size is None else roi_output_size,
+        )
+    if backbone == "vgg16":
+        return VGG16FisherNet(
+            num_classes=num_classes,
+            patch_dim=patch_dim,
+            num_components=num_components,
+            pretrained=pretrained,
+            roi_output_size=7 if roi_output_size is None else roi_output_size,
         )
     if backbone == "resnet101":
         return ResNetFisherNet(
