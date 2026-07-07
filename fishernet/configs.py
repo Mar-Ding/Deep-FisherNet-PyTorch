@@ -12,8 +12,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "batch_size": 1,
         "optimizer": "adamw",
         "lr": 1e-4,
-        "backbone_lr": 1e-4,
-        "classifier_lr": 1e-4,
+        "backbone_lr": 1e-2,
+        "classifier_lr": 1e-3,
         "classifier_bias_lr": 1e-4,
         "fisher_lr": 1e-4,
         "fisher_bias_lr": 1e-4,
@@ -75,6 +75,20 @@ PRESETS: dict[str, dict[str, Any]] = {
         "patch_dim": 256,            # paper: 256-dim reduction
         "num_components": 32,        # paper: K=32
         "roi_output_size": 7,        # VGG16 fc6 expects 512×7×7
+    },
+    "stage1-vgg16-paper": {
+        "backbone": "vgg16",
+        "epochs": 57,       # 9k iters × batch=32 / 5011 images ≈ 57 epochs
+        "batch_size": 32,
+        "optimizer": "sgd",
+        "backbone_lr": 1e-2,     # paper: lr=0.01 for most layers
+        "classifier_lr": 1e-3,   # paper: lr=0.001 for last fc layer
+        "classifier_bias_lr": 2e-3,
+        "momentum": 0.9,
+        "weight_decay": 5e-4,
+        "lr_step_ratio": 0.6,
+        "lr_gamma": 0.1,
+        "image_size": 224,       # whole-image finetune uses fixed 224×224
     },
     "official-res101-like": {
         "backbone": "resnet101",
