@@ -102,6 +102,8 @@ def extract_fv_multi_scale(
     Processes each image at all scales+flips, averages FV per image.
     """
     model.eval()
+    model.fisher.power_norm = False
+    model.fisher.l2_norm = False
     all_fv = []
     all_labels = []
     n = len(raw_dataset)
@@ -158,6 +160,8 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
+    model.fisher.power_norm = False
+    model.fisher.l2_norm = False
 
     # Shared patch boxes (fixed per image size)
     boxes = make_dense_patch_boxes(

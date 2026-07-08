@@ -33,11 +33,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "epochs": 10,
         "optimizer": "sgd",
         "lr": 1e-3,
-        "backbone_lr": 1e-3,
+        "backbone_lr": 1e-4,
         "classifier_lr": 1e-3,
         "classifier_bias_lr": 2e-3,
-        "fisher_lr": 1e-2,
-        "fisher_bias_lr": 2e-2,
+        "fisher_lr": 1e-1,
+        "fisher_bias_lr": 2e-1,
         "momentum": 0.9,
         "weight_decay": 5e-4,
         "grad_accum_steps": 8,
@@ -57,7 +57,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "batch_size": 1,
         "optimizer": "sgd",
         "lr": 1e-3,       # backbone base_lr
-        "backbone_lr": 1e-3,
+        "backbone_lr": 1e-4,
         "classifier_lr": 1e-3,       # paper: 0.001 for score FC
         "classifier_bias_lr": 2e-3,  # 2× rule for bias
         "fisher_lr": 1e-1,           # paper: 0.1 for Fisher Layer
@@ -95,11 +95,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "epochs": 10,
         "optimizer": "sgd",
         "lr": 1e-3,
-        "backbone_lr": 1e-3,
+        "backbone_lr": 1e-4,
         "classifier_lr": 1e-3,
         "classifier_bias_lr": 2e-3,
-        "fisher_lr": 1e-2,
-        "fisher_bias_lr": 2e-2,
+        "fisher_lr": 1e-1,
+        "fisher_bias_lr": 2e-1,
         "momentum": 0.9,
         "weight_decay": 5e-4,
         "grad_accum_steps": 8,
