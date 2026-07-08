@@ -1,31 +1,18 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.so
+# Data
+VOCtrainval_06-Nov-2007.tar
+VOCtest_06-Nov-2007.tar
+data/
 
-# Data / large binaries
-*.tar
-*.tar.gz
-*.zip
-data/VOCdevkit/
-
-# Outputs
+# Outputs / checkpoints
 outputs/
+*.pt
 
-# Temp
+# Logs
+*.log
+reports/
+
+# Temporary
 tmp/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-Thumbs.db
+__pycache__/
+*.pyc
 .DS_Store
-
-# Environment
-.venv/
-venv/

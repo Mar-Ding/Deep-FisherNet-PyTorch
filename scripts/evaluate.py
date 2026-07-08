@@ -140,6 +140,8 @@ def extract_fv_multi_scale(
     return torch.cat(all_fv, dim=0), torch.stack(all_labels, dim=0)
 
 
+torch.cuda.empty_cache()
+
 def main() -> None:
     args = parse_args()
     multi_scale = args.test_scales is not None and len(args.test_scales) > 0
@@ -169,7 +171,7 @@ def main() -> None:
     if args.fit_svm:
         # --- SVM path ---
         try:
-            from sklearn.svm import LinearSVC
+            from sklearn.linear_model import SGDClassifier
             from sklearn.preprocessing import StandardScaler
         except ImportError:
             print("ERROR: --fit-svm requires scikit-learn.")
@@ -200,7 +202,7 @@ def main() -> None:
             if y_binary.max() == 0:
                 svm_models.append(None)
                 continue
-            svm = LinearSVC(C=args.svm_C, max_iter=10000, dual="auto", random_state=7, verbose=0)
+            svm = SGDClassifier(loss='hinge', penalty='l2', alpha=1e-4, max_iter=1000, tol=1e-3, random_state=7)
             svm.fit(train_fv, y_binary)
             svm_models.append(svm)
 
@@ -212,7 +214,7 @@ def main() -> None:
         test_fv, test_labels = extract_fv_multi_scale(
             model, raw_test, boxes, args.test_scales if multi_scale else [args.image_size],
             max_samples=args.max_samples, device=args.device,
-            use_flip=False,  # paper: 5 scales, no flip for SVM
+            use_flip=True,   # paper: +horizontal flip for SVM test
         )
         test_fv = test_fv.sign() * test_fv.abs().sqrt()
         test_fv = F.normalize(test_fv, p=2, dim=1, eps=1e-6).numpy()
@@ -228,7 +230,7 @@ def main() -> None:
                 all_scores.append(torch.from_numpy(scores))
 
         scores_tensor = torch.stack(all_scores, dim=1).float()
-        mean_ap, aps = mean_average_precision(test_labels_tensor, scores_tensor)
+        mean_ap, aps = mean_average_precision(test_labels, scores_tensor)
         print(f"\n=== SVM mAP: {mean_ap:.4f} ===")
 
     else:

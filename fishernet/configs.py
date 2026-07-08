@@ -15,7 +15,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "backbone_lr": 1e-2,
         "classifier_lr": 1e-3,
         "classifier_bias_lr": 1e-4,
-        "fisher_lr": 1e-4,
+        "fisher_lr": 1e-1,
         "fisher_bias_lr": 1e-4,
         "weight_decay": 1e-4,
         "grad_accum_steps": 1,
@@ -58,10 +58,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "optimizer": "sgd",
         "lr": 1e-3,       # backbone base_lr
         "backbone_lr": 1e-3,
-        "classifier_lr": 1e-1,       # paper: 0.1 for new fc layers
-        "classifier_bias_lr": 2e-1,  # 2× rule for bias
-        "fisher_lr": 1e-4,           # paper: 0.0001
-        "fisher_bias_lr": 2e-4,      # 2× rule for bias
+        "classifier_lr": 1e-3,       # paper: 0.001 for score FC
+        "classifier_bias_lr": 2e-3,  # 2× rule for bias
+        "fisher_lr": 1e-1,           # paper: 0.1 for Fisher Layer
+        "fisher_bias_lr": 2e-1,      # 2× rule for bias
         "momentum": 0.9,
         "weight_decay": 5e-4,
         "grad_accum_steps": 2,       # batch=1 × accum=2 → effective batch=2 (matches paper)
