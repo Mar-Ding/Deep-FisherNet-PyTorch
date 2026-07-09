@@ -1,0 +1,34 @@
+/root/autodl-tmp/Deep-FisherNet-PyTorch/scripts/evaluate.py:258: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(args.checkpoint, map_location=args.device)
+Extracting train FV features for SVM...
+/root/autodl-tmp/Deep-FisherNet-PyTorch/scripts/evaluate.py:196: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  payload = torch.load(cache_path, map_location="cpu")
+Loaded cached train FV: outputs/e1_b1_fv_cache/train_trainval_480-576-688-864-1200_noflip_500.pt
+Train FV: torch.Size([500, 16384])
+Extracting test FV features...
+/root/autodl-tmp/Deep-FisherNet-PyTorch/scripts/evaluate.py:196: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  payload = torch.load(cache_path, map_location="cpu")
+Loaded cached test FV: outputs/e1_b1_fv_cache/test_test_480-576-688-864-1200_flip_500.pt
+
+=== SVM mAP: 0.7502 ===
+SVM solver=sgd C=30.0 standardize=True max_iter=10000 tol=0.0001
+  aeroplane    0.7986
+  bicycle      0.7526
+  bird         0.9523
+  boat         0.9133
+  bottle       0.4733
+  bus          0.8266
+  car          0.8639
+  cat          0.7464
+  chair        0.6085
+  cow          0.5088
+  diningtable  0.7417
+  dog          0.7684
+  horse        0.9091
+  motorbike    0.7372
+  person       0.9170
+  pottedplant  0.4530
+  sheep        0.8013
+  sofa         0.6421
+  train        0.9288
+  tvmonitor    0.6606

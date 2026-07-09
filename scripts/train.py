@@ -311,12 +311,28 @@ def main() -> None:
             if k.startswith("features.") and k in model_sd and v.shape == model_sd[k].shape:
                 model_sd[k] = v
                 loaded += 1
+        vgg_fc_map = {
+            "classifier.1.weight": "patch_mlp.0.weight",
+            "classifier.1.bias": "patch_mlp.0.bias",
+            "classifier.4.weight": "patch_mlp.3.weight",
+            "classifier.4.bias": "patch_mlp.3.bias",
+        }
+        for src_key, dst_key in vgg_fc_map.items():
+            if src_key in sd and dst_key in model_sd and sd[src_key].shape == model_sd[dst_key].shape:
+                model_sd[dst_key] = sd[src_key]
+                loaded += 1
         model.load_state_dict(model_sd)
-        print(f"  Loaded {loaded} feature layers from Stage 1 checkpoint")
+        print(f"  Loaded {loaded} compatible Stage 1 tensors")
 
     if args.fisher_init is not None:
         init = torch.load(args.fisher_init, map_location=args.device)
+        if hasattr(model, "pca") and "pca_weight" in init:
+            model.pca.weight.data.copy_(init["pca_weight"].to(args.device))
+            if "pca_bias" in init and model.pca.bias is not None:
+                model.pca.bias.data.copy_(init["pca_bias"].to(args.device))
+            print(f"Loaded PCA projection from {args.fisher_init}")
         model.fisher.initialize_from_gmm(init["means"], init["sigmas"], init.get("priors"))
+        print(f"Loaded Fisher GMM init from {args.fisher_init}")
 
     optimizer = build_optimizer(model, args)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(

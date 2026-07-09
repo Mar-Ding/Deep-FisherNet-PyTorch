@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-components", type=int, default=32)
     parser.add_argument("--max-patches", type=int, default=160)
     parser.add_argument("--roi-output-size", type=int)
+    parser.add_argument("--resize-mode", choices=("square", "longest"), default="square")
     parser.add_argument("--max-descriptors", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
@@ -58,6 +59,7 @@ def main() -> None:
         patch_sizes=tuple(args.patch_sizes),
         patch_stride=args.patch_stride,
         max_patches=args.max_patches,
+        resize_mode=args.resize_mode,
         download=args.download,
     )
     loader = DataLoader(

@@ -4,11 +4,13 @@ This repo is prepared so the remote agent only needs to run diagnostics/training
 
 Cost rule: RTX 4090 rental is estimated at 2.2 yuan/hour. Any command expected to exceed 30 minutes must be estimated and approved by the user before running.
 
-> **Status after session 2026-07-09:** All 4 schemes evaluated.
+> **Status after session 2026-07-09:** All Res101 gates stopped; B1 remains best.
 > ✅ B1 (best): 80.25% mAP (VGG16 corrected-patches, full SVM C=10)
 > ❌ B2: gate failed (67.36% 500-sample SVM)
 > ❌ C1: gate failed (55.13% 500-sample SVM)
 > ❌ C2: gate failed (62.53% 500-sample SVM, frozen BN)
+> ❌ C3: gate failed (61.02% 500-sample SVM, frozen BN + self-fit PCA/GMM init)
+> ❌ D1: gate failed (73.13% 500-sample SVM, B1 + longest-resize GMM init + 8 epochs)
 > See `reports/handoff_4090.md` for full results. GPU instance released.
 
 ## Environment

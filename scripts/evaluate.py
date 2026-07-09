@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -62,6 +63,14 @@ def parse_args() -> argparse.Namespace:
                         help="Dataset split to use for SVM training.")
     parser.add_argument("--svm-C", type=float, default=1.0,
                         help="Linear SVM C parameter (paper: C=1).")
+    parser.add_argument("--svm-solver", choices=("sgd", "liblinear"), default="sgd",
+                        help="SVM solver for --fit-svm. liblinear is slower but a useful accuracy check.")
+    parser.add_argument("--svm-max-iter", type=int, default=1000)
+    parser.add_argument("--svm-tol", type=float, default=1e-3)
+    parser.add_argument("--feature-cache-dir", type=Path,
+                        help="Cache extracted FV tensors so SVM C/solver sweeps do not repeat GPU forward.")
+    parser.add_argument("--no-standardize", action="store_true",
+                        help="Skip StandardScaler before SVM. Useful for ablation only.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     args._explicit_args = {token for token in sys.argv[1:] if token.startswith("--")}
@@ -164,6 +173,66 @@ def extract_fv_multi_scale(
     return torch.cat(all_fv, dim=0), torch.stack(all_labels, dim=0)
 
 
+def cache_name(split: str, args: argparse.Namespace, scales: list[int], use_flip: bool) -> str:
+    scale_tag = "-".join(str(s) for s in scales)
+    max_tag = "full" if args.max_samples is None else str(args.max_samples)
+    flip_tag = "flip" if use_flip else "noflip"
+    return f"{split}_{args.image_set if split == 'test' else args.train_image_set}_{scale_tag}_{flip_tag}_{max_tag}.pt"
+
+
+def load_or_extract_fv(
+    split: str,
+    model: torch.nn.Module,
+    raw_dataset: VOCDetection,
+    scales: list[int],
+    use_flip: bool,
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    cache_path = None
+    if args.feature_cache_dir is not None:
+        args.feature_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = args.feature_cache_dir / cache_name(split, args, scales, use_flip)
+        if cache_path.exists():
+            payload = torch.load(cache_path, map_location="cpu")
+            print(f"Loaded cached {split} FV: {cache_path}")
+            return payload["fv"], payload["labels"]
+
+    fv, labels = extract_fv_multi_scale(
+        model, raw_dataset, scales,
+        max_samples=args.max_samples, device=args.device,
+        patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
+        max_patches=args.max_patches, resize_mode=args.resize_mode,
+        use_flip=use_flip,
+    )
+    if cache_path is not None:
+        torch.save(
+            {
+                "fv": fv.cpu(),
+                "labels": labels.cpu(),
+                "meta": {
+                    "checkpoint": str(args.checkpoint),
+                    "preset": args.preset,
+                    "scales": scales,
+                    "use_flip": use_flip,
+                    "max_samples": args.max_samples,
+                    "resize_mode": args.resize_mode,
+                    "patch_sizes": list(args.patch_sizes),
+                    "patch_stride": args.patch_stride,
+                    "max_patches": args.max_patches,
+                },
+            },
+            cache_path,
+        )
+        print(f"Saved cached {split} FV: {cache_path}")
+    return fv, labels
+
+
+def normalize_fv_for_svm(fv: torch.Tensor) -> np.ndarray:
+    fv = fv.sign() * fv.abs().sqrt()
+    fv = F.normalize(fv, p=2, dim=1, eps=1e-6)
+    return fv.numpy()
+
+
 torch.cuda.empty_cache()
 
 def main() -> None:
@@ -197,30 +266,29 @@ def main() -> None:
         try:
             from sklearn.linear_model import SGDClassifier
             from sklearn.preprocessing import StandardScaler
+            from sklearn.svm import LinearSVC
         except ImportError:
             print("ERROR: --fit-svm requires scikit-learn.")
             sys.exit(1)
 
+        scales = args.test_scales if multi_scale else [args.image_size]
         print("Extracting train FV features for SVM...")
         raw_train = VOCDetection(
             root=str(args.data_root), year=args.year,
             image_set=args.train_image_set, download=False,
         )
-        train_fv, train_labels = extract_fv_multi_scale(
-            model, raw_train, args.test_scales if multi_scale else [args.image_size],
-            max_samples=args.max_samples, device=args.device,
-            patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
-            max_patches=args.max_patches, resize_mode=args.resize_mode,
-            use_flip=False,  # paper: no flip for SVM training features
+        train_fv, train_labels = load_or_extract_fv(
+            "train", model, raw_train, scales, False, args
         )
         print(f"Train FV: {train_fv.shape}")
         # Apply power-norm + L2 (same as FisherLayer forward)
-        train_fv = train_fv.sign() * train_fv.abs().sqrt()
-        train_fv = F.normalize(train_fv, p=2, dim=1, eps=1e-6).numpy()
+        train_fv = normalize_fv_for_svm(train_fv)
         train_labels_np = train_labels.numpy()
 
-        scaler = StandardScaler()
-        train_fv = scaler.fit_transform(train_fv)
+        scaler = None
+        if not args.no_standardize:
+            scaler = StandardScaler()
+            train_fv = scaler.fit_transform(train_fv)
 
         svm_models = []
         for c in range(train_labels_np.shape[1]):
@@ -228,8 +296,24 @@ def main() -> None:
             if y_binary.max() == 0:
                 svm_models.append(None)
                 continue
-            alpha = 1.0 / (args.svm_C * train_fv.shape[0])
-            svm = SGDClassifier(loss="hinge", penalty="l2", alpha=alpha, max_iter=1000, tol=1e-3, random_state=7)
+            if args.svm_solver == "sgd":
+                alpha = 1.0 / (args.svm_C * train_fv.shape[0])
+                svm = SGDClassifier(
+                    loss="hinge",
+                    penalty="l2",
+                    alpha=alpha,
+                    max_iter=args.svm_max_iter,
+                    tol=args.svm_tol,
+                    random_state=7,
+                )
+            else:
+                svm = LinearSVC(
+                    C=args.svm_C,
+                    max_iter=args.svm_max_iter,
+                    tol=args.svm_tol,
+                    dual="auto",
+                    random_state=7,
+                )
             svm.fit(train_fv, y_binary)
             svm_models.append(svm)
 
@@ -238,17 +322,12 @@ def main() -> None:
             root=str(args.data_root), year=args.year,
             image_set=args.image_set, download=False,
         )
-        test_fv, test_labels = extract_fv_multi_scale(
-            model, raw_test, args.test_scales if multi_scale else [args.image_size],
-            max_samples=args.max_samples, device=args.device,
-            patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
-            max_patches=args.max_patches, resize_mode=args.resize_mode,
-            use_flip=True,   # paper: +horizontal flip for SVM test
+        test_fv, test_labels = load_or_extract_fv(
+            "test", model, raw_test, scales, True, args
         )
-        test_fv = test_fv.sign() * test_fv.abs().sqrt()
-        test_fv = F.normalize(test_fv, p=2, dim=1, eps=1e-6).numpy()
-        test_fv = scaler.transform(test_fv)
-        test_labels_np = test_labels.numpy()
+        test_fv = normalize_fv_for_svm(test_fv)
+        if scaler is not None:
+            test_fv = scaler.transform(test_fv)
 
         all_scores = []
         for c, svm in enumerate(svm_models):
@@ -261,6 +340,10 @@ def main() -> None:
         scores_tensor = torch.stack(all_scores, dim=1).float()
         mean_ap, aps = mean_average_precision(test_labels, scores_tensor)
         print(f"\n=== SVM mAP: {mean_ap:.4f} ===")
+        print(
+            f"SVM solver={args.svm_solver} C={args.svm_C} "
+            f"standardize={not args.no_standardize} max_iter={args.svm_max_iter} tol={args.svm_tol}"
+        )
 
     else:
         # --- FC classifier path ---
