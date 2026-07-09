@@ -25,34 +25,35 @@ def bottleneck_caffe_names(layer_idx: int, block_idx: int) -> dict:
     """
     Return Caffe layer names for a bottleneck block.
     
-    layer_idx: 0=layer1(conv2_x), 1=layer2(conv3_x), 2=layer3(conv4_x), 3=layer4(conv5_x)
-    block_idx: 0, 1, 2, ... within each layer
-    
-    Returns a dict: pytorch_key -> (caffe_conv_name, caffe_bn_name, caffe_scale_name)
+    Caffe naming conventions per layer:
+      layer0 (res2): a, b, c              (3 blocks)
+      layer1 (res3): a, b1, b2, b3        (4 blocks)
+      layer2 (res4): a, b1, ..., b22      (23 blocks)
+      layer3 (res5): a, b, c              (3 blocks)
     """
-    # Caffe prefix: res2, res3, res4, res5
     stem = f"res{2 + layer_idx}"
-    # Block letter: a, b, c, ...
-    letter = chr(97 + block_idx)
+    
+    # Block suffix: layer0 & layer3 use single letter, others use letter + number
+    first_letter = chr(97 + block_idx)  # a=0, b=1, c=2, ...
+    if layer_idx in (0, 3):
+        suffix = first_letter  # a, b, c
+    else:
+        if block_idx == 0:
+            suffix = "a"  # first block always just "a"
+        else:
+            suffix = f"b{block_idx}"  # b1, b2, b3, ...
     
     names = {}
+    conv_names = ["conv1", "conv2", "conv3"]
+    for cn in conv_names:
+        c = "abc"[conv_names.index(cn)]
+        names[cn] = f"{stem}{suffix}_branch2{c}"
+        names[f"bn_{cn}"] = f"bn{2+layer_idx}{suffix}_branch2{c}"
+        names[f"scale_{cn}"] = f"scale{2+layer_idx}{suffix}_branch2{c}"
     
-    # Main branch
-    names["conv1"] = f"{stem}_{letter}_branch2a"
-    names["conv2"] = f"{stem}_{letter}_branch2b"
-    names["conv3"] = f"{stem}_{letter}_branch2c"
-    
-    # BatchNorm and Scale for each conv
-    for conv_name, caffe_conv in names.items():
-        caffe_bn = caffe_conv.replace(f"{stem}_{letter}_branch", f"bn{2+layer_idx}_{letter}_branch")
-        caffe_scale = caffe_conv.replace(f"{stem}_{letter}_branch", f"scale{2+layer_idx}_{letter}_branch")
-        names[f"bn_{conv_name}"] = caffe_bn
-        names[f"scale_{conv_name}"] = caffe_scale
-    
-    # Downsample (identity shortcut)
-    names["downsample_conv"] = f"{stem}_{letter}_branch1"
-    names["downsample_bn"] = f"bn{2+layer_idx}_{letter}_branch1"
-    names["downsample_scale"] = f"scale{2+layer_idx}_{letter}_branch1"
+    names["downsample_conv"] = f"{stem}{suffix}_branch1"
+    names["downsample_bn"] = f"bn{2+layer_idx}{suffix}_branch1"
+    names["downsample_scale"] = f"scale{2+layer_idx}{suffix}_branch1"
     
     return names
 
