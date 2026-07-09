@@ -39,13 +39,44 @@ PASCAL_CLASSES = (
 CLASS_TO_INDEX = {name: idx for idx, name in enumerate(PASCAL_CLASSES)}
 
 
-def load_and_preprocess(image: Image.Image, image_size: int) -> Tensor:
-    """Resize, tensorise, and normalise a single image."""
+def resize_image(
+    image: Image.Image,
+    image_size: int,
+    mode: str = "square",
+) -> Image.Image:
+    """Resize an image using either the legacy square path or paper-style longest side."""
     image = image.convert("RGB")
-    image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+    if mode == "square":
+        return TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+    if mode == "longest":
+        width, height = image.size
+        scale = image_size / float(max(height, width))
+        new_h = max(1, int(round(height * scale)))
+        new_w = max(1, int(round(width * scale)))
+        return TF.resize(image, [new_h, new_w], interpolation=Image.BILINEAR)
+    raise ValueError(f"unknown resize mode: {mode}")
+
+
+def tensorise_and_normalise(image: Image.Image) -> Tensor:
     tensor = TF.to_tensor(image)
     tensor = TF.normalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     return tensor
+
+
+def load_and_preprocess(image: Image.Image, image_size: int, resize_mode: str = "square") -> Tensor:
+    """Resize, tensorise, and normalise a single image."""
+    return tensorise_and_normalise(resize_image(image, image_size, resize_mode))
+
+
+def load_and_preprocess_with_size(
+    image: Image.Image,
+    image_size: int,
+    resize_mode: str = "square",
+) -> tuple[Tensor, int, int]:
+    """Return preprocessed tensor plus actual resized height and width."""
+    resized = resize_image(image, image_size, resize_mode)
+    width, height = resized.size
+    return tensorise_and_normalise(resized), height, width
 
 
 class VOCClassification(Dataset):
@@ -70,6 +101,7 @@ class VOCClassification(Dataset):
         patch_sizes: tuple[int, ...] = (96, 128, 192, 256),
         patch_stride: int = 64,
         max_patches: int = 160,
+        resize_mode: str = "square",
         download: bool = False,
     ) -> None:
         self.dataset = VOCDetection(
@@ -85,6 +117,7 @@ class VOCClassification(Dataset):
         self.patch_sizes = patch_sizes
         self.patch_stride = patch_stride
         self.max_patches = max_patches
+        self.resize_mode = resize_mode
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -96,20 +129,20 @@ class VOCClassification(Dataset):
         # Training mode: multi-scale augmentation
         if self.train_scales is not None:
             image_size = random.choice(self.train_scales)
-            image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+            image = resize_image(image, image_size, self.resize_mode)
             if self.hflip_prob > 0 and random.random() < self.hflip_prob:
                 image = TF.hflip(image)
         else:
             image_size = self.image_size
-            image = TF.resize(image, [image_size, image_size], interpolation=Image.BILINEAR)
+            image = resize_image(image, image_size, self.resize_mode)
 
-        tensor = TF.to_tensor(image)
-        tensor = TF.normalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+        width, height = image.size
+        tensor = tensorise_and_normalise(image)
 
         labels = self._multi_hot(target)
         boxes = make_dense_patch_boxes(
-            height=image_size,
-            width=image_size,
+            height=height,
+            width=width,
             patch_sizes=self.patch_sizes,
             stride=self.patch_stride,
             max_patches=self.max_patches,
@@ -119,6 +152,7 @@ class VOCClassification(Dataset):
             "labels": labels,
             "boxes": boxes,
             "image_id": target["annotation"]["filename"],
+            "image_hw": (height, width),
             "test_scales": self.test_scales,  # None for training, tuple for eval
         }
 

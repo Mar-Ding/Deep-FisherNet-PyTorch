@@ -21,6 +21,7 @@ from fishernet.data.voc import (
     VOCClassification,
     collate_voc_batch,
     load_and_preprocess,
+    load_and_preprocess_with_size,
 )
 from fishernet.models import build_fishernet
 from fishernet.utils import mean_average_precision
@@ -33,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--year", default="2007")
     parser.add_argument("--image-set", default="test")
-    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101"), default="alexnet")
+    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101", "resnet101-spatial"), default="alexnet")
     parser.add_argument("--image-size", type=int, default=448)
     parser.add_argument("--test-scales", type=int, nargs="+", default=None,
                         help="Multi-scale test sizes. Paper used: 480 576 688 864 1200. "
@@ -44,6 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch-dim", type=int, default=256)
     parser.add_argument("--num-components", type=int, default=32)
     parser.add_argument("--roi-output-size", type=int)
+    parser.add_argument("--resize-mode", choices=("square", "longest"), default="square")
+    parser.add_argument("--learn-priors", action="store_true")
+    parser.add_argument("--fisher-parameterization", choices=("legacy", "caffe"), default="legacy")
+    parser.add_argument("--fisher-include-log-det", action="store_true")
+    parser.add_argument("--fisher-scale-by-prior", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fisher-pooling", choices=("mean", "sum"), default="mean")
+    parser.add_argument("--no-fisher-power-norm", action="store_true")
+    parser.add_argument("--no-fisher-l2-norm", action="store_true")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--max-samples", type=int)
@@ -62,25 +71,31 @@ def parse_args() -> argparse.Namespace:
 def apply_test_scales(
     model: torch.nn.Module,
     image: Image.Image,
-    boxes: torch.Tensor,
     scales: list[int],
     device: str,
+    patch_sizes: tuple[int, ...],
+    patch_stride: int,
+    max_patches: int | None,
+    resize_mode: str,
     use_flip: bool = True,
 ) -> torch.Tensor:
     """Run one image through the model at multiple scales + optional flip, return averaged logits."""
     all_logits = []
     for scale in scales:
-        tensor = load_and_preprocess(image, scale)
+        tensor, height, width = load_and_preprocess_with_size(image, scale, resize_mode)
         tensor = tensor.unsqueeze(0).to(device)
+        boxes = make_dense_patch_boxes(height, width, patch_sizes, patch_stride, max_patches)
         box_batch = [boxes.to(device)]
         logits = model(tensor, box_batch)
         all_logits.append(logits)
 
         if use_flip:
             flipped = TF.hflip(image)
-            tensor_f = load_and_preprocess(flipped, scale)
+            tensor_f, height_f, width_f = load_and_preprocess_with_size(flipped, scale, resize_mode)
             tensor_f = tensor_f.unsqueeze(0).to(device)
-            logits_f = model(tensor_f, box_batch)
+            boxes_f = make_dense_patch_boxes(height_f, width_f, patch_sizes, patch_stride, max_patches)
+            box_batch_f = [boxes_f.to(device)]
+            logits_f = model(tensor_f, box_batch_f)
             all_logits.append(logits_f)
 
     return torch.stack(all_logits, dim=0).mean(dim=0)
@@ -90,10 +105,13 @@ def apply_test_scales(
 def extract_fv_multi_scale(
     model: torch.nn.Module,
     raw_dataset: VOCDetection,
-    boxes: torch.Tensor,
     scales: list[int],
     max_samples: int | None,
     device: str,
+    patch_sizes: tuple[int, ...],
+    patch_stride: int,
+    max_patches: int | None,
+    resize_mode: str,
     use_flip: bool = True,
     disable_progress: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -124,15 +142,19 @@ def extract_fv_multi_scale(
 
         view_fv = []
         for scale in scales:
-            tensor = load_and_preprocess(image, scale).unsqueeze(0).to(device)
+            tensor, height, width = load_and_preprocess_with_size(image, scale, resize_mode)
+            tensor = tensor.unsqueeze(0).to(device)
+            boxes = make_dense_patch_boxes(height, width, patch_sizes, patch_stride, max_patches)
             box_batch = [boxes.to(device)]
             _, fv = model(tensor, box_batch, return_features=True)
             view_fv.append(fv)
 
             if use_flip:
                 flipped = TF.hflip(image)
-                tensor_f = load_and_preprocess(flipped, scale).unsqueeze(0).to(device)
-                _, fv_f = model(tensor_f, box_batch, return_features=True)
+                tensor_f, height_f, width_f = load_and_preprocess_with_size(flipped, scale, resize_mode)
+                tensor_f = tensor_f.unsqueeze(0).to(device)
+                boxes_f = make_dense_patch_boxes(height_f, width_f, patch_sizes, patch_stride, max_patches)
+                _, fv_f = model(tensor_f, [boxes_f.to(device)], return_features=True)
                 view_fv.append(fv_f)
 
         fv_avg = torch.stack(view_fv, dim=0).mean(dim=0)
@@ -156,21 +178,19 @@ def main() -> None:
         num_components=args.num_components,
         pretrained=False,
         roi_output_size=args.roi_output_size,
+        learn_priors=args.learn_priors,
+        fisher_parameterization=args.fisher_parameterization,
+        fisher_include_log_det=args.fisher_include_log_det,
+        fisher_scale_by_prior=args.fisher_scale_by_prior,
+        fisher_pooling=args.fisher_pooling,
+        fisher_power_norm=not args.no_fisher_power_norm,
+        fisher_l2_norm=not args.no_fisher_l2_norm,
     ).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     model.fisher.power_norm = False
     model.fisher.l2_norm = False
-
-    # Shared patch boxes (fixed per image size)
-    boxes = make_dense_patch_boxes(
-        height=args.image_size,
-        width=args.image_size,
-        patch_sizes=tuple(args.patch_sizes),
-        stride=args.patch_stride,
-        max_patches=args.max_patches,
-    )
 
     if args.fit_svm:
         # --- SVM path ---
@@ -187,8 +207,10 @@ def main() -> None:
             image_set=args.train_image_set, download=False,
         )
         train_fv, train_labels = extract_fv_multi_scale(
-            model, raw_train, boxes, args.test_scales if multi_scale else [args.image_size],
+            model, raw_train, args.test_scales if multi_scale else [args.image_size],
             max_samples=args.max_samples, device=args.device,
+            patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
+            max_patches=args.max_patches, resize_mode=args.resize_mode,
             use_flip=False,  # paper: no flip for SVM training features
         )
         print(f"Train FV: {train_fv.shape}")
@@ -206,7 +228,8 @@ def main() -> None:
             if y_binary.max() == 0:
                 svm_models.append(None)
                 continue
-            svm = SGDClassifier(loss='hinge', penalty='l2', alpha=1e-4, max_iter=1000, tol=1e-3, random_state=7)
+            alpha = 1.0 / (args.svm_C * train_fv.shape[0])
+            svm = SGDClassifier(loss="hinge", penalty="l2", alpha=alpha, max_iter=1000, tol=1e-3, random_state=7)
             svm.fit(train_fv, y_binary)
             svm_models.append(svm)
 
@@ -216,8 +239,10 @@ def main() -> None:
             image_set=args.image_set, download=False,
         )
         test_fv, test_labels = extract_fv_multi_scale(
-            model, raw_test, boxes, args.test_scales if multi_scale else [args.image_size],
+            model, raw_test, args.test_scales if multi_scale else [args.image_size],
             max_samples=args.max_samples, device=args.device,
+            patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
+            max_patches=args.max_patches, resize_mode=args.resize_mode,
             use_flip=True,   # paper: +horizontal flip for SVM test
         )
         test_fv = test_fv.sign() * test_fv.abs().sqrt()
@@ -263,7 +288,9 @@ def main() -> None:
                         labels[PASCAL_CLASSES.index(name)] = 1.0
 
                 logits = apply_test_scales(
-                    model, image, boxes, args.test_scales, args.device, use_flip=True,
+                    model, image, args.test_scales, args.device,
+                    patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
+                    max_patches=args.max_patches, resize_mode=args.resize_mode, use_flip=True,
                 )
                 all_labels.append(labels)
                 all_scores.append(torch.sigmoid(logits).cpu())
@@ -280,6 +307,7 @@ def main() -> None:
                 patch_sizes=tuple(args.patch_sizes),
                 patch_stride=args.patch_stride,
                 max_patches=args.max_patches,
+                resize_mode=args.resize_mode,
                 download=False,
             )
             eval_loader = DataLoader(

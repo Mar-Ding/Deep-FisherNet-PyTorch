@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-set", default="trainval")
     parser.add_argument("--val-set", default="test")
     parser.add_argument("--download", action="store_true")
-    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101"), default="alexnet")
+    parser.add_argument("--backbone", choices=("alexnet", "vgg16", "resnet101", "resnet101-spatial"), default="alexnet")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--optimizer", choices=("adamw", "sgd"), default="sgd")
@@ -54,6 +54,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch-dim", type=int, default=256)
     parser.add_argument("--num-components", type=int, default=32)
     parser.add_argument("--roi-output-size", type=int)
+    parser.add_argument("--resize-mode", choices=("square", "longest"), default="square")
+    parser.add_argument("--learn-priors", action="store_true")
+    parser.add_argument("--fisher-parameterization", choices=("legacy", "caffe"), default="legacy")
+    parser.add_argument("--fisher-include-log-det", action="store_true")
+    parser.add_argument("--fisher-scale-by-prior", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fisher-pooling", choices=("mean", "sum"), default="mean")
+    parser.add_argument("--no-fisher-power-norm", action="store_true")
+    parser.add_argument("--no-fisher-l2-norm", action="store_true")
     parser.add_argument("--max-patches", type=int, default=800)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--pretrained", action="store_true")
@@ -121,11 +129,11 @@ def train_stage1(args: argparse.Namespace) -> None:
 
     train_dataset = VOCClassification(
         root=args.data_root, year=args.year, image_set=args.train_set,
-        image_size=args.image_size, download=args.download,
+        image_size=args.image_size, resize_mode=args.resize_mode, download=args.download,
     )
     val_dataset = VOCClassification(
         root=args.data_root, year=args.year, image_set=args.val_set,
-        image_size=args.image_size, download=False,
+        image_size=args.image_size, resize_mode=args.resize_mode, download=False,
     )
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
@@ -257,13 +265,13 @@ def main() -> None:
         train_scales=tuple(args.train_scales) if args.train_scales else None,
         hflip_prob=args.hflip_prob,
         patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
-        max_patches=args.max_patches, download=args.download,
+        max_patches=args.max_patches, resize_mode=args.resize_mode, download=args.download,
     )
     val_dataset = VOCClassification(
         root=args.data_root, year=args.year, image_set=args.val_set,
         image_size=args.image_size,
         patch_sizes=tuple(args.patch_sizes), patch_stride=args.patch_stride,
-        max_patches=args.max_patches, download=False,
+        max_patches=args.max_patches, resize_mode=args.resize_mode, download=False,
     )
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
@@ -280,6 +288,13 @@ def main() -> None:
         backbone=args.backbone, num_classes=len(PASCAL_CLASSES),
         patch_dim=args.patch_dim, num_components=args.num_components,
         pretrained=args.pretrained, roi_output_size=args.roi_output_size,
+        learn_priors=args.learn_priors,
+        fisher_parameterization=args.fisher_parameterization,
+        fisher_include_log_det=args.fisher_include_log_det,
+        fisher_scale_by_prior=args.fisher_scale_by_prior,
+        fisher_pooling=args.fisher_pooling,
+        fisher_power_norm=not args.no_fisher_power_norm,
+        fisher_l2_norm=not args.no_fisher_l2_norm,
     ).to(args.device)
 
     # Load Stage 1 backbone weights if provided
@@ -376,7 +391,11 @@ def main() -> None:
 
 
 def build_optimizer(model: torch.nn.Module, args: argparse.Namespace) -> torch.optim.Optimizer:
-    feature_params = list(model.features.parameters()) + list(model.patch_mlp.parameters())
+    feature_params = list(model.features.parameters())
+    if hasattr(model, "patch_mlp"):
+        feature_params += list(model.patch_mlp.parameters())
+    if hasattr(model, "pca"):
+        feature_params += list(model.pca.parameters())
     fisher_bias_lr = args.fisher_lr if args.fisher_bias_lr is None else args.fisher_bias_lr
     classifier_bias_lr = args.classifier_lr if args.classifier_bias_lr is None else args.classifier_bias_lr
     param_groups = [

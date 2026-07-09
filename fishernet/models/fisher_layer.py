@@ -22,6 +22,10 @@ class FisherLayer(nn.Module):
         eps: float = 1e-6,
         power_norm: bool = True,
         l2_norm: bool = True,
+        parameterization: str = "legacy",
+        include_log_det: bool = False,
+        scale_by_prior: bool = True,
+        pooling: str = "mean",
     ) -> None:
         super().__init__()
         self.feature_dim = feature_dim
@@ -30,6 +34,14 @@ class FisherLayer(nn.Module):
         self.eps = eps
         self.power_norm = power_norm
         self.l2_norm = l2_norm
+        self.parameterization = parameterization
+        self.include_log_det = include_log_det
+        self.scale_by_prior = scale_by_prior
+        self.pooling = pooling
+        if parameterization not in {"legacy", "caffe"}:
+            raise ValueError("parameterization must be 'legacy' or 'caffe'")
+        if pooling not in {"mean", "sum"}:
+            raise ValueError("pooling must be 'mean' or 'sum'")
 
         self.weight = nn.Parameter(torch.empty(num_components, feature_dim))
         self.bias = nn.Parameter(torch.empty(num_components, feature_dim))
@@ -54,13 +66,17 @@ class FisherLayer(nn.Module):
         sigmas: Tensor,
         priors: Optional[Tensor] = None,
     ) -> None:
-        """Initialize ``w=1/sigma`` and ``b=-mu`` from a fitted diagonal GMM."""
+        """Initialize Fisher parameters from a fitted diagonal GMM."""
         if means.shape != (self.num_components, self.feature_dim):
             raise ValueError(f"means must have shape {(self.num_components, self.feature_dim)}")
         if sigmas.shape != (self.num_components, self.feature_dim):
             raise ValueError(f"sigmas must have shape {(self.num_components, self.feature_dim)}")
-        self.weight.copy_(1.0 / sigmas.clamp_min(self.eps))
-        self.bias.copy_(-means)
+        inv_sigma = 1.0 / sigmas.clamp_min(self.eps)
+        self.weight.copy_(inv_sigma)
+        if self.parameterization == "caffe":
+            self.bias.copy_(-means * inv_sigma)
+        else:
+            self.bias.copy_(-means)
         if priors is not None and self.prior_logits is not None:
             self.prior_logits.copy_(priors.clamp_min(self.eps).log())
 
@@ -70,12 +86,22 @@ class FisherLayer(nn.Module):
         if descriptors.shape[-1] != self.feature_dim:
             raise ValueError(f"expected feature dim {self.feature_dim}, got {descriptors.shape[-1]}")
 
-        # y[b, m, k, d] = w[k, d] * (x[b, m, d] + b[k, d])
-        y = self.weight[None, None, :, :] * (
-            descriptors[:, :, None, :] + self.bias[None, None, :, :]
-        )
+        if self.parameterization == "caffe":
+            # Matches the official Caffe EltwiseProduct layer: y = w * x + b.
+            y = (
+                self.weight[None, None, :, :] * descriptors[:, :, None, :]
+                + self.bias[None, None, :, :]
+            )
+        else:
+            # Legacy PyTorch port: y = w * (x + b).
+            y = self.weight[None, None, :, :] * (
+                descriptors[:, :, None, :] + self.bias[None, None, :, :]
+            )
         dist = y.square().sum(dim=-1)
         logits = -0.5 * dist
+        if self.include_log_det:
+            log_det = self.weight.abs().clamp_min(self.eps).log().sum(dim=-1)
+            logits = logits + log_det[None, None, :]
         if self.prior_logits is not None:
             logits = logits + F.log_softmax(self.prior_logits, dim=0)[None, None, :]
         gamma = F.softmax(logits, dim=-1)
@@ -92,7 +118,7 @@ class FisherLayer(nn.Module):
                 device=descriptors.device,
             )
 
-        if self.prior_logits is not None:
+        if self.prior_logits is not None and self.scale_by_prior:
             priors = F.softmax(self.prior_logits, dim=0).clamp_min(self.eps)
             prior_scale = priors.rsqrt()[None, None, :, None]
         else:
@@ -101,8 +127,11 @@ class FisherLayer(nn.Module):
         first_order = gamma[..., None] * y * prior_scale
         second_order = gamma[..., None] * ((y.square() - 1.0) / math.sqrt(2.0)) * prior_scale
 
-        first_order = first_order.sum(dim=1) / denom[:, None, :]
-        second_order = second_order.sum(dim=1) / denom[:, None, :]
+        first_order = first_order.sum(dim=1)
+        second_order = second_order.sum(dim=1)
+        if self.pooling == "mean":
+            first_order = first_order / denom[:, None, :]
+            second_order = second_order / denom[:, None, :]
         fv = torch.cat([first_order.flatten(1), second_order.flatten(1)], dim=1)
 
         if self.power_norm:

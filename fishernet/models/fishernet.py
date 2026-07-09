@@ -20,6 +20,7 @@ class AlexNetFisherNet(nn.Module):
         pretrained: bool = True,
         learn_priors: bool = False,
         roi_output_size: int = 6,
+        fisher_kwargs: Optional[dict] = None,
     ) -> None:
         super().__init__()
         weights = AlexNet_Weights.IMAGENET1K_V1 if pretrained else None
@@ -37,6 +38,7 @@ class AlexNetFisherNet(nn.Module):
             feature_dim=patch_dim,
             num_components=num_components,
             learn_priors=learn_priors,
+            **(fisher_kwargs or {}),
         )
         self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
 
@@ -131,6 +133,7 @@ class VGG16FisherNet(nn.Module):
         pretrained: bool = True,
         learn_priors: bool = False,
         roi_output_size: int = 7,
+        fisher_kwargs: Optional[dict] = None,
     ) -> None:
         super().__init__()
         weights = VGG16_Weights.IMAGENET1K_V1 if pretrained else None
@@ -154,6 +157,7 @@ class VGG16FisherNet(nn.Module):
             feature_dim=patch_dim,
             num_components=num_components,
             learn_priors=learn_priors,
+            **(fisher_kwargs or {}),
         )
         self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
 
@@ -213,6 +217,7 @@ class ResNetFisherNet(nn.Module):
         pretrained: bool = True,
         learn_priors: bool = False,
         roi_output_size: int = 1,
+        fisher_kwargs: Optional[dict] = None,
     ) -> None:
         super().__init__()
         weights = ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
@@ -238,6 +243,7 @@ class ResNetFisherNet(nn.Module):
             feature_dim=patch_dim,
             num_components=num_components,
             learn_priors=learn_priors,
+            **(fisher_kwargs or {}),
         )
         self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
 
@@ -285,6 +291,77 @@ class ResNetFisherNet(nn.Module):
         return batch_features, mask
 
 
+class ResNet101SpatialFisherNet(nn.Module):
+    """Official-prototxt-style ResNet-101 FisherNet.
+
+    The official Res-101 model applies Fisher encoding over spatial positions
+    of the res5c feature map, after a 1x1 PCA-like projection to 128 channels.
+    It does not use dense ROI patch boxes.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 20,
+        patch_dim: int = 128,
+        num_components: int = 64,
+        pretrained: bool = True,
+        learn_priors: bool = True,
+        fisher_kwargs: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        weights = ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
+        base = resnet101(weights=weights)
+        self.features = nn.Sequential(
+            base.conv1,
+            base.bn1,
+            base.relu,
+            base.maxpool,
+            base.layer1,
+            base.layer2,
+            base.layer3,
+            base.layer4,
+        )
+        self.pca = nn.Conv2d(2048, patch_dim, kernel_size=1, bias=True)
+        self.fisher = FisherLayer(
+            feature_dim=patch_dim,
+            num_components=num_components,
+            learn_priors=learn_priors,
+            **(fisher_kwargs or {}),
+        )
+        self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
+
+    def forward(
+        self,
+        images: Tensor,
+        boxes: Optional[List[Tensor]] = None,
+        return_features: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        del boxes
+        descriptors, mask = self.extract_patch_features(images, None)
+        fisher_features = self.fisher(descriptors, mask=mask)
+        logits = self.classifier(fisher_features)
+        if return_features:
+            return logits, fisher_features
+        return logits
+
+    def extract_patch_features(
+        self,
+        images: Tensor,
+        boxes: Optional[List[Tensor]] = None,
+    ) -> tuple[Tensor, Tensor]:
+        del boxes
+        conv = self.features(images)
+        projected = self.pca(conv)
+        descriptors = projected.flatten(2).transpose(1, 2).contiguous()
+        descriptors = F.normalize(descriptors, p=2, dim=-1)
+        mask = torch.ones(
+            descriptors.shape[:2],
+            dtype=torch.bool,
+            device=descriptors.device,
+        )
+        return descriptors, mask
+
+
 def build_fishernet(
     backbone: str,
     num_classes: int = 20,
@@ -292,14 +369,31 @@ def build_fishernet(
     num_components: int = 32,
     pretrained: bool = True,
     roi_output_size: int | None = None,
+    learn_priors: bool = False,
+    fisher_parameterization: str = "legacy",
+    fisher_include_log_det: bool = False,
+    fisher_scale_by_prior: bool = True,
+    fisher_pooling: str = "mean",
+    fisher_power_norm: bool = True,
+    fisher_l2_norm: bool = True,
 ) -> nn.Module:
+    fisher_kwargs = {
+        "parameterization": fisher_parameterization,
+        "include_log_det": fisher_include_log_det,
+        "scale_by_prior": fisher_scale_by_prior,
+        "pooling": fisher_pooling,
+        "power_norm": fisher_power_norm,
+        "l2_norm": fisher_l2_norm,
+    }
     if backbone == "alexnet":
         return AlexNetFisherNet(
             num_classes=num_classes,
             patch_dim=patch_dim,
             num_components=num_components,
             pretrained=pretrained,
+            learn_priors=learn_priors,
             roi_output_size=6 if roi_output_size is None else roi_output_size,
+            fisher_kwargs=fisher_kwargs,
         )
     if backbone == "vgg16":
         return VGG16FisherNet(
@@ -307,7 +401,9 @@ def build_fishernet(
             patch_dim=patch_dim,
             num_components=num_components,
             pretrained=pretrained,
+            learn_priors=learn_priors,
             roi_output_size=7 if roi_output_size is None else roi_output_size,
+            fisher_kwargs=fisher_kwargs,
         )
     if backbone == "resnet101":
         return ResNetFisherNet(
@@ -315,6 +411,17 @@ def build_fishernet(
             patch_dim=patch_dim,
             num_components=num_components,
             pretrained=pretrained,
+            learn_priors=learn_priors,
             roi_output_size=1 if roi_output_size is None else roi_output_size,
+            fisher_kwargs=fisher_kwargs,
+        )
+    if backbone == "resnet101-spatial":
+        return ResNet101SpatialFisherNet(
+            num_classes=num_classes,
+            patch_dim=patch_dim,
+            num_components=num_components,
+            pretrained=pretrained,
+            learn_priors=learn_priors,
+            fisher_kwargs=fisher_kwargs,
         )
     raise ValueError(f"unknown backbone: {backbone}")
