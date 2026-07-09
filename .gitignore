@@ -4,15 +4,46 @@ VOCtest_06-Nov-2007.tar
 data/
 
 # Outputs / checkpoints
+output/
 outputs/
 *.pt
 
 # Logs
 *.log
-reports/
 
 # Temporary
 tmp/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Internal agent artifacts (not for public/professor)
+AGENT_*
+4090_training_plan.md
+training_status.md
+training_strategy_comparison.md
+
+# Paper PDF (separately downloadable)
+1608.00182.pdf
+
+# Debug/experimental scripts (not core)
+create_frozen_ckpt.py
+launch_e2.py
+run_e_diagnostic.sh
+scripts/debug_forward_stats.py
+scripts/preflight_check.py
+scripts/setup_step2.py
+scripts/visualize_patches.py
+scripts/watchdog.py
+scripts/run_vgg16_robust.py
+
+# Internal handoff / logs in reports
+reports/handoff_4090.md
+reports/remote_setup_log.txt
+reports/remote_status.txt
+reports/reproduction_diagnosis_and_4090_plan.md
+reports/*.log
+
+# IDE
+.vscode/
+.idea/
