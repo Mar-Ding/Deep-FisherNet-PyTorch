@@ -306,9 +306,11 @@ class ResNet101SpatialFisherNet(nn.Module):
         num_components: int = 64,
         pretrained: bool = True,
         learn_priors: bool = True,
+        freeze_bn: bool = False,
         fisher_kwargs: Optional[dict] = None,
     ) -> None:
         super().__init__()
+        self.freeze_bn = freeze_bn
         weights = ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
         base = resnet101(weights=weights)
         self.features = nn.Sequential(
@@ -329,6 +331,19 @@ class ResNet101SpatialFisherNet(nn.Module):
             **(fisher_kwargs or {}),
         )
         self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
+
+    def train(self, mode: bool = True) -> "ResNet101SpatialFisherNet":
+        super().train(mode)
+        if self.freeze_bn:
+            self._freeze_bn()
+        return self
+
+    def _freeze_bn(self) -> None:
+        for m in self.features.modules():
+            if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                m.eval()
+                for p in m.parameters():
+                    p.requires_grad_(False)
 
     def forward(
         self,
@@ -370,6 +385,7 @@ def build_fishernet(
     pretrained: bool = True,
     roi_output_size: int | None = None,
     learn_priors: bool = False,
+    freeze_bn: bool = False,
     fisher_parameterization: str = "legacy",
     fisher_include_log_det: bool = False,
     fisher_scale_by_prior: bool = True,
@@ -422,6 +438,7 @@ def build_fishernet(
             num_components=num_components,
             pretrained=pretrained,
             learn_priors=learn_priors,
+            freeze_bn=freeze_bn,
             fisher_kwargs=fisher_kwargs,
         )
     raise ValueError(f"unknown backbone: {backbone}")

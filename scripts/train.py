@@ -289,6 +289,7 @@ def main() -> None:
         patch_dim=args.patch_dim, num_components=args.num_components,
         pretrained=args.pretrained, roi_output_size=args.roi_output_size,
         learn_priors=args.learn_priors,
+        freeze_bn=getattr(args, "freeze_bn", False),
         fisher_parameterization=args.fisher_parameterization,
         fisher_include_log_det=args.fisher_include_log_det,
         fisher_scale_by_prior=args.fisher_scale_by_prior,

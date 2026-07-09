@@ -1,17 +1,18 @@
 # Deep FisherNet 4090 Handoff Log
 
 Date: 2026-07-09
-Session: B1 C=10 full SVM / B2 gate / C1 gate
+Session: B1 C=10 full SVM / B2 gate / C1 gate / C2 frozen BN gate
 
 ## Summary
 
-All three candidate schemes from AGENT_4090_RUNBOOK.md have been evaluated:
+All four candidate schemes from AGENT_4090_RUNBOOK.md have been evaluated:
 
 | Scheme | Backbone | Config | 500-sample SVM | Full SVM | Status |
 |--------|----------|--------|:---:|:---:|:--------|
 | **B1** | VGG16 | corrected-patches, C=10 | 75.28% | **80.25%** | ✅ Best |
 | B2 | VGG16 | official-fisher, 4ep | 67.36% | - | ❌ Gate failed |
 | C1 | ResNet101-Spatial | official config, 4ep | 55.13% | - | ❌ Gate failed |
+| C2 | ResNet101-Spatial | frozen BN, C=10 | 62.53% | - | ❌ Gate failed |
 
 ## B1: VGG16 corrected-patches (BEST RESULT)
 
@@ -76,6 +77,36 @@ epoch=4: train_loss=0.2918  val_mAP=0.0940
 
 Decision: Stop. spatial Fisher on ResNet101 performs much worse than patch Fisher on VGG16. Possible cause: removing RoI Align/patch sampling loses spatial invariance that helps classification.
 
+## C2: ResNet101-Spatial Frozen BN (GATE FAILED)
+
+**Checkpoint:** `outputs/c2_res101_spatial_frozenbn_4ep/best.pt` (330 MB)
+**Training:** 4 epochs with frozen BN, preset `official-res101-spatial-frozenbn`
+**500-sample SVM C=10:** 62.53% ❌ Below 70% fail threshold
+
+Training:
+```
+epoch=1: train_loss=0.4872  val_mAP=0.1085
+epoch=2: train_loss=0.3265  val_mAP=0.1597
+epoch=3: train_loss=0.2953  val_mAP=0.1719
+epoch=4: train_loss=0.2918  val_mAP=0.1805
+```
+
+Frozen BN improved val_mAP (0.0940→0.1805, +92%) and SVM mAP (55.13%→62.53%, +7.4%) vs C1, but still far below B1 baseline. Likely root cause: ResNet101 spatial Fisher lacks the dense patch sampling that VGG16 patch Fisher uses.
+
+Per-class AP:
+```
+aeroplane    0.8741  bicycle    0.3769  bird       0.8088
+boat         0.7839  bottle     0.3814  bus        0.7581
+car          0.8453  cat        0.6143  chair      0.4079
+cow          0.4834  diningtab  0.4686  dog        0.5705
+horse        0.8750  motors     0.8217  person     0.7937
+pottedplant  0.4108  sheep      0.3696  sofa       0.5599
+train        0.9326  tvmonitor  0.3706
+```
+
+Log: `outputs/agent_logs/c2_svm_4ep_500.log` (73 KB)
+Decision: Stop. Frozen BN helps but insufficient. ResNet101-spatial architecture is the bottleneck.
+
 ## GPU Usage
 
 - RTX 4090 24GB
@@ -93,6 +124,9 @@ Remote: `/root/autodl-tmp/Deep-FisherNet-PyTorch/`
 - `reports/b1_svm_full.log` - B1 full SVM C=1 result (79.76%)
 - `reports/c1_train_4ep.log` - C1 training log
 - `reports/c1_svm_4ep_500.log` - C1 500-sample SVM (55.13%)
+
+- `reports/c2_train_4ep.log` - C2 frozen BN training log
+- `reports/c2_svm_4ep_500.log` - C2 500-sample SVM C=10 (62.53%)
 
 ### Remote agent_logs/ (not synced, ~2 MB each)
 - b2_train_4ep.log, b2_svm_1ep_500.log
