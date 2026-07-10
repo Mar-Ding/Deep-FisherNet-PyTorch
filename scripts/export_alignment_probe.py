@@ -80,6 +80,10 @@ def export_pytorch_resnet_backbone(
     Returns a dict of blob_name → numpy array.
     """
     model = resnet101(weights=ResNet101_Weights.IMAGENET1K_V1).to(device)
+    for layer_name in ("layer2", "layer3", "layer4"):
+        block = getattr(model, layer_name)[0]
+        block.conv1.stride = (2, 2)
+        block.conv2.stride = (1, 1)
     model.eval()
 
     # Register forward hooks to capture intermediate features.
@@ -111,7 +115,6 @@ def export_pytorch_resnet_backbone(
         "conv1": model.conv1,
         "bn1": model.bn1,
         "relu": model.relu,
-        "maxpool": model.maxpool,
         "layer1": model.layer1,
         "layer2": model.layer2,
         "layer3": model.layer3,
@@ -121,7 +124,19 @@ def export_pytorch_resnet_backbone(
         handles.append(mod.register_forward_hook(_hook(caffe_name)))
 
     # Forward
-    _ = model(tensor)
+    x = model.conv1(tensor)
+    x = model.bn1(x)
+    x = model.relu(x)
+    x = F.max_pool2d(x, kernel_size=3, stride=2, padding=0, ceil_mode=True)
+    blobs["maxpool"] = x.detach().cpu().numpy()
+    x = model.layer1(x)
+    blobs["layer1"] = x.detach().cpu().numpy()
+    x = model.layer2(x)
+    blobs["layer2"] = x.detach().cpu().numpy()
+    x = model.layer3(x)
+    blobs["layer3"] = x.detach().cpu().numpy()
+    x = model.layer4(x)
+    blobs["layer4"] = x.detach().cpu().numpy()
 
     for h in handles:
         h.remove()
@@ -140,11 +155,7 @@ def export_pytorch_resnet_backbone(
     # The final output of layer3[22] (after the final relu) = res5c_relu in Caffe.
     # We already captured "layer3" from the hook, but let's extract res5c_relu specifically.
 
-    # Hook the very last ReLU in layer4 (= Caffe conv5_x / res5c_relu)
-    last_block = model.layer4[-1]
-    h = last_block.relu.register_forward_hook(_hook("res5c_relu"))
-    _ = model(tensor)
-    h.remove()
+    blobs["res5c_relu"] = blobs["layer4"]
 
     return blobs
 
@@ -198,7 +209,7 @@ def main() -> None:
     for name, arr in blobs.items():
         save_path = out_dir / f"pytorch_{name}.npy"
         np.save(str(save_path), arr)
-        print(f"  → {save_path.name}: {arr.shape} [{arr.min():.4f}, {arr.max():.4f}]")
+        print(f"  -> {save_path.name}: {arr.shape} [{arr.min():.4f}, {arr.max():.4f}]")
 
     print("[probe] Done.")
 

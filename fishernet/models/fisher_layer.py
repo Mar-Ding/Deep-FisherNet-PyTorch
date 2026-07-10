@@ -6,6 +6,32 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 
 
+class CaffeGpuEltwiseProduct(torch.autograd.Function):
+    """Official Caffe Fisher EltwiseProduct with GPU backward quirks."""
+
+    @staticmethod
+    def forward(ctx, descriptors: Tensor, weight: Tensor, bias: Tensor) -> tuple[Tensor, Tensor]:
+        y = weight[None, None, :, :] * descriptors[:, :, None, :] + bias[None, None, :, :]
+        sigma = weight.abs().clamp_min(1e-7)
+        ctx.save_for_backward(descriptors, weight)
+        return y, sigma
+
+    @staticmethod
+    def backward(ctx, grad_y: Tensor, grad_sigma: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        descriptors, weight = ctx.saved_tensors
+        grad_descriptors = (grad_y * weight[None, None, :, :]).sum(dim=2)
+
+        normal_weight = (grad_y * descriptors[:, :, None, :]).sum(dim=(0, 1))
+        normal_bias = grad_y.sum(dim=(0, 1))
+
+        # The official CUDA kernel stores the EltwiseProduct parameter diff
+        # as if [component, dim] were flattened with the axes swapped.
+        grad_weight = normal_weight.transpose(0, 1).contiguous().reshape_as(weight)
+        grad_weight = grad_weight + grad_sigma.reshape_as(weight) * weight.sign()
+        grad_bias = normal_bias.transpose(0, 1).contiguous().reshape_as(weight)
+        return grad_descriptors, grad_weight, grad_bias
+
+
 class FisherLayer(nn.Module):
     """Differentiable Fisher Vector layer from Deep FisherNet.
 
@@ -26,6 +52,10 @@ class FisherLayer(nn.Module):
         include_log_det: bool = False,
         scale_by_prior: bool = True,
         pooling: str = "mean",
+        second_order_scale: float = 1.0 / math.sqrt(2.0),
+        caffe_backward_compat: bool = False,
+        assignment_sigma_scale: float = 1.0,
+        assignment_temperature: float = 1.0,
     ) -> None:
         super().__init__()
         self.feature_dim = feature_dim
@@ -38,6 +68,12 @@ class FisherLayer(nn.Module):
         self.include_log_det = include_log_det
         self.scale_by_prior = scale_by_prior
         self.pooling = pooling
+        self.second_order_scale = second_order_scale
+        self.caffe_backward_compat = caffe_backward_compat
+        if assignment_sigma_scale <= 0 or assignment_temperature <= 0:
+            raise ValueError("assignment_sigma_scale and assignment_temperature must be positive")
+        self.assignment_sigma_scale = float(assignment_sigma_scale)
+        self.assignment_temperature = float(assignment_temperature)
         if parameterization not in {"legacy", "caffe"}:
             raise ValueError("parameterization must be 'legacy' or 'caffe'")
         if pooling not in {"mean", "sum"}:
@@ -86,7 +122,10 @@ class FisherLayer(nn.Module):
         if descriptors.shape[-1] != self.feature_dim:
             raise ValueError(f"expected feature dim {self.feature_dim}, got {descriptors.shape[-1]}")
 
-        if self.parameterization == "caffe":
+        sigma = None
+        if self.parameterization == "caffe" and self.caffe_backward_compat:
+            y, sigma = CaffeGpuEltwiseProduct.apply(descriptors, self.weight, self.bias)
+        elif self.parameterization == "caffe":
             # Matches the official Caffe EltwiseProduct layer: y = w * x + b.
             y = (
                 self.weight[None, None, :, :] * descriptors[:, :, None, :]
@@ -97,10 +136,12 @@ class FisherLayer(nn.Module):
             y = self.weight[None, None, :, :] * (
                 descriptors[:, :, None, :] + self.bias[None, None, :, :]
             )
+        y = y / self.assignment_sigma_scale
         dist = y.square().sum(dim=-1)
-        logits = -0.5 * dist
+        logits = -0.5 * dist / self.assignment_temperature
         if self.include_log_det:
-            log_det = self.weight.abs().clamp_min(self.eps).log().sum(dim=-1)
+            sigma_for_log_det = self.weight.abs().clamp_min(self.eps) if sigma is None else sigma
+            log_det = sigma_for_log_det.log().sum(dim=-1) - self.feature_dim * math.log(self.assignment_sigma_scale)
             logits = logits + log_det[None, None, :]
         if self.prior_logits is not None:
             logits = logits + F.log_softmax(self.prior_logits, dim=0)[None, None, :]
@@ -125,7 +166,7 @@ class FisherLayer(nn.Module):
             prior_scale = 1.0
 
         first_order = gamma[..., None] * y * prior_scale
-        second_order = gamma[..., None] * ((y.square() - 1.0) / math.sqrt(2.0)) * prior_scale
+        second_order = gamma[..., None] * ((y.square() - 1.0) * self.second_order_scale) * prior_scale
 
         first_order = first_order.sum(dim=1)
         second_order = second_order.sum(dim=1)

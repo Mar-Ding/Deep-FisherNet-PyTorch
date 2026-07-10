@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-components", type=int, default=32)
     parser.add_argument("--max-patches", type=int, default=160)
     parser.add_argument("--roi-output-size", type=int)
+    parser.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    parser.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    parser.add_argument("--pca-l2-caffe-backward", action="store_true")
     parser.add_argument("--resize-mode", choices=("square", "longest"), default="square")
     parser.add_argument("--max-descriptors", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -76,6 +79,9 @@ def main() -> None:
         num_components=args.num_components,
         pretrained=args.pretrained,
         roi_output_size=args.roi_output_size,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(args.device)
     model.eval()
 

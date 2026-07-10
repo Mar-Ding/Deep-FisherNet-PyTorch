@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classifier-bias-lr", type=float)
     parser.add_argument("--fisher-lr", type=float, default=1e-4)
     parser.add_argument("--fisher-bias-lr", type=float)
+    parser.add_argument("--prior-lr", type=float)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--grad-accum-steps", type=int, default=2)
@@ -60,12 +61,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fisher-include-log-det", action="store_true")
     parser.add_argument("--fisher-scale-by-prior", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--fisher-pooling", choices=("mean", "sum"), default="mean")
+    parser.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    parser.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    parser.add_argument("--fisher-assignment-sigma-scale", type=float, default=1.0)
+    parser.add_argument("--fisher-assignment-temperature", type=float, default=1.0)
+    parser.add_argument("--pca-l2-caffe-backward", action="store_true")
     parser.add_argument("--no-fisher-power-norm", action="store_true")
     parser.add_argument("--no-fisher-l2-norm", action="store_true")
     parser.add_argument("--max-patches", type=int, default=800)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--fisher-init", type=Path)
+    parser.add_argument("--freeze-backbone", action="store_true")
+    parser.add_argument("--freeze-pca", action="store_true")
+    parser.add_argument("--freeze-fisher", action="store_true")
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stage1", action="store_true",
                         help="Stage 1: whole-image CNN finetune (no Fisher layer).")
@@ -296,6 +305,11 @@ def main() -> None:
         fisher_pooling=args.fisher_pooling,
         fisher_power_norm=not args.no_fisher_power_norm,
         fisher_l2_norm=not args.no_fisher_l2_norm,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        fisher_assignment_sigma_scale=args.fisher_assignment_sigma_scale,
+        fisher_assignment_temperature=args.fisher_assignment_temperature,
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(args.device)
 
     # Load Stage 1 backbone weights if provided
@@ -408,22 +422,38 @@ def main() -> None:
 
 
 def build_optimizer(model: torch.nn.Module, args: argparse.Namespace) -> torch.optim.Optimizer:
-    feature_params = list(model.features.parameters())
+    if getattr(args, "freeze_backbone", False):
+        for param in model.features.parameters():
+            param.requires_grad_(False)
+    feature_params = [param for param in model.features.parameters() if param.requires_grad]
     if hasattr(model, "patch_mlp"):
-        feature_params += list(model.patch_mlp.parameters())
+        feature_params += [param for param in model.patch_mlp.parameters() if param.requires_grad]
     if hasattr(model, "pca"):
-        feature_params += list(model.pca.parameters())
+        if getattr(args, "freeze_pca", False):
+            for param in model.pca.parameters():
+                param.requires_grad_(False)
+        feature_params += [param for param in model.pca.parameters() if param.requires_grad]
+    if getattr(args, "freeze_fisher", False):
+        for param in model.fisher.parameters():
+            param.requires_grad_(False)
     fisher_bias_lr = args.fisher_lr if args.fisher_bias_lr is None else args.fisher_bias_lr
     classifier_bias_lr = args.classifier_lr if args.classifier_bias_lr is None else args.classifier_bias_lr
-    param_groups = [
-        {"params": feature_params, "lr": args.backbone_lr},
-        {"params": [model.fisher.weight], "lr": args.fisher_lr},
-        {"params": [model.fisher.bias], "lr": fisher_bias_lr},
-        {"params": [model.classifier.weight], "lr": args.classifier_lr},
-        {"params": [model.classifier.bias], "lr": classifier_bias_lr, "weight_decay": 0.0},
-    ]
-    if model.fisher.prior_logits is not None:
-        param_groups.append({"params": [model.fisher.prior_logits], "lr": args.fisher_lr})
+    param_groups = []
+    if feature_params:
+        param_groups.append({"params": feature_params, "lr": args.backbone_lr})
+    if model.fisher.weight.requires_grad:
+        param_groups.append({"params": [model.fisher.weight], "lr": args.fisher_lr})
+    if model.fisher.bias.requires_grad:
+        param_groups.append({"params": [model.fisher.bias], "lr": fisher_bias_lr})
+    if model.classifier.weight.requires_grad:
+        param_groups.append({"params": [model.classifier.weight], "lr": args.classifier_lr})
+    if model.classifier.bias.requires_grad:
+        param_groups.append({"params": [model.classifier.bias], "lr": classifier_bias_lr, "weight_decay": 0.0})
+    if model.fisher.prior_logits is not None and model.fisher.prior_logits.requires_grad:
+        prior_lr = args.fisher_lr if args.prior_lr is None else args.prior_lr
+        param_groups.append({"params": [model.fisher.prior_logits], "lr": prior_lr})
+    if not param_groups:
+        raise ValueError("No trainable parameters left after applying freeze options.")
     if args.optimizer == "sgd":
         return torch.optim.SGD(param_groups, lr=args.lr, momentum=args.momentum,
                                weight_decay=args.weight_decay)

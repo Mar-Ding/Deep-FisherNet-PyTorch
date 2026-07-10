@@ -26,6 +26,9 @@ def parse_args():
     p.add_argument("--data-root", type=Path, required=True)
     p.add_argument("--stage1-weights", type=Path, required=True)
     p.add_argument("--num-components", type=int, default=32)
+    p.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    p.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    p.add_argument("--pca-l2-caffe-backward", action="store_true")
     p.add_argument("--max-descriptors", type=int, default=200000)
     p.add_argument("--svm-C", type=float, default=1.0)
     p.add_argument("--num-workers", type=int, default=2)
@@ -104,6 +107,9 @@ def main():
         backbone=args.backbone, num_classes=len(PASCAL_CLASSES),
         patch_dim=args.patch_dim, num_components=args.num_components,
         pretrained=False, roi_output_size=args.roi_output_size,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(device)
     
     ckpt = torch.load(args.stage1_weights, map_location=device)

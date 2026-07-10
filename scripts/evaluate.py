@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fisher-include-log-det", action="store_true")
     parser.add_argument("--fisher-scale-by-prior", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--fisher-pooling", choices=("mean", "sum"), default="mean")
+    parser.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    parser.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    parser.add_argument("--fisher-assignment-sigma-scale", type=float, default=1.0)
+    parser.add_argument("--fisher-assignment-temperature", type=float, default=1.0)
+    parser.add_argument("--pca-l2-caffe-backward", action="store_true")
     parser.add_argument("--no-fisher-power-norm", action="store_true")
     parser.add_argument("--no-fisher-l2-norm", action="store_true")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -77,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     return apply_preset(args)
 
 
+@torch.inference_mode()
 def apply_test_scales(
     model: torch.nn.Module,
     image: Image.Image,
@@ -254,6 +260,11 @@ def main() -> None:
         fisher_pooling=args.fisher_pooling,
         fisher_power_norm=not args.no_fisher_power_norm,
         fisher_l2_norm=not args.no_fisher_l2_norm,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        fisher_assignment_sigma_scale=args.fisher_assignment_sigma_scale,
+        fisher_assignment_temperature=args.fisher_assignment_temperature,
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     model.load_state_dict(checkpoint["model"])
@@ -402,15 +413,16 @@ def main() -> None:
             )
             all_labels = []
             all_scores = []
-            for batch_idx, batch in enumerate(tqdm(eval_loader, desc="eval"), start=1):
-                if args.max_samples is not None and batch_idx > args.max_samples:
-                    break
-                images = batch["images"].to(args.device)
-                labels = batch["labels"]
-                boxes_b = [b.to(args.device) for b in batch["boxes"]]
-                logits = model(images, boxes_b)
-                all_labels.append(labels)
-                all_scores.append(torch.sigmoid(logits).cpu())
+            with torch.inference_mode():
+                for batch_idx, batch in enumerate(tqdm(eval_loader, desc="eval"), start=1):
+                    if args.max_samples is not None and batch_idx > args.max_samples:
+                        break
+                    images = batch["images"].to(args.device)
+                    labels = batch["labels"]
+                    boxes_b = [b.to(args.device) for b in batch["boxes"]]
+                    logits = model(images, boxes_b)
+                    all_labels.append(labels)
+                    all_scores.append(torch.sigmoid(logits).cpu())
 
             targets = torch.cat(all_labels, dim=0)
             scores = torch.cat(all_scores, dim=0)

@@ -133,6 +133,9 @@ PRESETS: dict[str, dict[str, Any]] = {
         "fisher_include_log_det": True,
         "fisher_scale_by_prior": True,
         "fisher_pooling": "sum",
+        "fisher_second_order_scale": 0.7071,
+        "fisher_caffe_backward_compat": True,
+        "pca_l2_caffe_backward": True,
     },
     "stage1-vgg16-paper": {
         "backbone": "vgg16",
@@ -227,6 +230,9 @@ PRESETS: dict[str, dict[str, Any]] = {
         "fisher_include_log_det": True,
         "fisher_scale_by_prior": True,
         "fisher_pooling": "sum",
+        "fisher_second_order_scale": 0.7071,
+        "fisher_caffe_backward_compat": True,
+        "pca_l2_caffe_backward": True,
     },
 }
 

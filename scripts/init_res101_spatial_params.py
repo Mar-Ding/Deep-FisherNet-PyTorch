@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fisher-include-log-det", action="store_true")
     parser.add_argument("--fisher-scale-by-prior", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--fisher-pooling", choices=("mean", "sum"), default="mean")
+    parser.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    parser.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    parser.add_argument("--pca-l2-caffe-backward", action="store_true")
     parser.add_argument("--no-fisher-power-norm", action="store_true")
     parser.add_argument("--no-fisher-l2-norm", action="store_true")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -231,6 +234,9 @@ def main() -> None:
         fisher_pooling=args.fisher_pooling,
         fisher_power_norm=not args.no_fisher_power_norm,
         fisher_l2_norm=not args.no_fisher_l2_norm,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(args.device)
     freeze_batch_norm(model)
 

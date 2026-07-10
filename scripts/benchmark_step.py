@@ -23,6 +23,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch-dim", type=int, default=256)
     parser.add_argument("--num-components", type=int, default=32)
     parser.add_argument("--roi-output-size", type=int)
+    parser.add_argument("--fisher-second-order-scale", type=float, default=2.0**-0.5)
+    parser.add_argument("--fisher-caffe-backward-compat", action="store_true")
+    parser.add_argument("--pca-l2-caffe-backward", action="store_true")
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -39,6 +42,9 @@ def main() -> None:
         num_components=args.num_components,
         pretrained=False,
         roi_output_size=args.roi_output_size,
+        fisher_second_order_scale=getattr(args, "fisher_second_order_scale", 2.0**-0.5),
+        fisher_caffe_backward_compat=getattr(args, "fisher_caffe_backward_compat", False),
+        pca_l2_caffe_backward=getattr(args, "pca_l2_caffe_backward", False),
     ).to(args.device)
     model.train()
     images = torch.randn(1, 3, args.image_size, args.image_size, device=args.device)

@@ -1,131 +1,174 @@
 """
-compare_alignment_probe.py — Compare Caffe vs PyTorch intermediate features.
+Compare Caffe and PyTorch intermediate blobs for the ResNet-101 alignment probe.
 
-After running:
-  1. export_alignment_probe.py  (locally) → pytorch_*.npy
-  2. export_caffe_blobs.py      (on AutoDL) → caffe_*.npy
-
-This script loads both, computes per-blob cosine similarity and relative
-MSE, and prints a summary table.
-
-Usage:
+Example:
   python scripts/compare_alignment_probe.py \
-      --caffe-dir debug_align/caffe_res101_000001_scale480 \
-      --pytorch-dir debug_align/pytorch_b1_000001_scale480
+    --pytorch-dir debug_align/pytorch_res101_caffe_v1_000001 \
+    --caffe-dir debug_align/caffe_res101_000001_scale480 \
+    --out debug_align/caffe_pytorch_backbone_compare.csv
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 import numpy as np
 
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity between two vectors (flattened)."""
-    a_f = a.ravel()
-    b_f = b.ravel()
+    a_f = a.ravel().astype(np.float64, copy=False)
+    b_f = b.ravel().astype(np.float64, copy=False)
     if a_f.size != b_f.size:
-        return -2.0  # size mismatch
-    dot = np.dot(a_f, b_f)
+        return -2.0
     norm = np.linalg.norm(a_f) * np.linalg.norm(b_f)
     if norm < 1e-12:
         return 0.0
-    return float(dot / norm)
+    return float(np.dot(a_f, b_f) / norm)
 
 
-def relative_mse(a: np.ndarray, b: np.ndarray) -> float:
-    """||a - b||^2 / ||a||^2"""
-    a_f = a.ravel().astype(np.float64)
-    b_f = b.ravel().astype(np.float64)
-    if a_f.size != b_f.size:
+def relative_mse(reference: np.ndarray, candidate: np.ndarray) -> float:
+    ref = reference.ravel().astype(np.float64, copy=False)
+    cand = candidate.ravel().astype(np.float64, copy=False)
+    if ref.size != cand.size:
         return -1.0
-    num = np.sum((a_f - b_f) ** 2)
-    den = np.sum(a_f ** 2)
+    den = np.sum(ref * ref)
     if den < 1e-12:
         return 0.0
-    return float(num / den)
+    diff = cand - ref
+    return float(np.sum(diff * diff) / den)
+
+
+def compare_arrays(caffe_arr: np.ndarray, pytorch_arr: np.ndarray) -> dict[str, float]:
+    caffe64 = caffe_arr.astype(np.float64, copy=False)
+    pytorch64 = pytorch_arr.astype(np.float64, copy=False)
+    diff = pytorch64 - caffe64
+    return {
+        "cosine": cosine_sim(caffe64, pytorch64),
+        "relative_mse": relative_mse(caffe64, pytorch64),
+        "rel_l2": float(np.linalg.norm(diff.ravel()) / (np.linalg.norm(caffe64.ravel()) + 1e-12)),
+        "mean_abs": float(np.mean(np.abs(diff))),
+        "max_abs": float(np.max(np.abs(diff))),
+        "rmse": float(np.sqrt(np.mean(diff * diff))),
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare Caffe vs PyTorch alignment blobs.")
-    parser.add_argument("--caffe-dir", type=str, required=True)
-    parser.add_argument("--pytorch-dir", type=str, required=True)
-    parser.add_argument("--tol", type=float, default=0.95,
-                        help="Cosine sim threshold for PASS (default: 0.95)")
+    parser.add_argument("--caffe-dir", type=Path, required=True)
+    parser.add_argument("--pytorch-dir", type=Path, required=True)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--tol", type=float, default=0.95)
     args = parser.parse_args()
 
-    caffe_dir = Path(args.caffe_dir)
-    pytorch_dir = Path(args.pytorch_dir)
-
-    # Layer mapping: Caffe blob name → PyTorch blob name
-    # Key mapping — adjust as needed based on actual naming
     layer_pairs = [
-        # (caffe_name, pytorch_name, description)
-        ("conv1", "conv1", "conv1 (7×7)"),
-        ("pool1", "maxpool", "pool1 (3×3 max)"),
-        ("res2a_relu", None, None),       # Caffe-specific, skip for now
-        ("res3c_relu", "layer1", "layer1 (res3c)"),
-        ("res4f_relu", "layer2", "layer2 (res4f)"),
-        ("res5c_relu", "layer3", "layer3 (res5c) — backbone final"),
-        ("res5c_pca", None, None),
-        ("res5c_pca_l2", None, None),
-        ("fisher_sum", None, None),
+        ("data", "input_tensor", "input"),
+        ("conv1", "relu", "conv1_relu"),
+        ("pool1", "maxpool", "pool1"),
+        ("res2c", "layer1", "res2c/layer1"),
+        ("res3b3", "layer2", "res3b3/layer2"),
+        ("res4b22", "layer3", "res4b22/layer3"),
+        ("res5c", "layer4", "res5c/layer4"),
+        ("res5c_pca", "pca", "res5c_pca"),
+        ("res5c_pca_l2", "pca_l2", "res5c_pca_l2"),
+        ("fisher1", "fisher1", "fisher1/y"),
+        ("fisher2", "fisher2", "fisher2/y_squared"),
+        ("fisher3", "fisher3", "fisher3/dist_sum"),
+        ("fisher4_new", "fisher4_new_logits", "fisher4_new/logits"),
+        ("fisher_gamma", "fisher_gamma", "fisher_gamma"),
+        ("fisher6", "fisher6", "fisher6/first_order"),
+        ("fisher7", "fisher7", "fisher7/second_order"),
+        ("fisher_sum", "fisher_sum", "fisher_sum"),
     ]
 
-    print(f"{'Layer':<22} {'Caffe shape':<20} {'PyTorch shape':<20} {'CosSim':<10} {'RelMSE':<10} {'Status'}")
-    print("-" * 90)
+    print(
+        f"{'Layer':<18} {'Caffe shape':<18} {'PyTorch shape':<18} "
+        f"{'CosSim':<12} {'RelL2':<12} {'MeanAbs':<12} {'Status'}"
+    )
+    print("-" * 105)
 
-    statuses = []
-    for caffe_name, pytorch_name, desc in layer_pairs:
-        caffe_path = caffe_dir / f"caffe_{caffe_name}.npy"
-        if pytorch_name is not None:
-            pytorch_path = pytorch_dir / f"pytorch_{pytorch_name}.npy"
+    rows: list[dict[str, object]] = []
+    comparable_statuses: list[bool] = []
+    for caffe_name, pytorch_name, label in layer_pairs:
+        caffe_path = args.caffe_dir / f"caffe_{caffe_name}.npy"
+        if pytorch_name == "input_tensor":
+            pytorch_path = args.pytorch_dir / "input_tensor.npy"
         else:
-            pytorch_path = None
+            pytorch_path = args.pytorch_dir / f"pytorch_{pytorch_name}.npy"
+        row: dict[str, object] = {
+            "layer": label,
+            "caffe": caffe_name,
+            "pytorch": pytorch_name,
+        }
 
         if not caffe_path.exists():
-            print(f"{caffe_name:<22} { '<missing>':<20} {'—':<20} {'—':<10} {'—':<10} {'SKIP (no caffe)'}")
+            row["status"] = "SKIP_NO_CAFFE"
+            rows.append(row)
+            print(f"{label:<18} {'<missing>':<18} {'-':<18} {'-':<12} {'-':<12} {'-':<12} {row['status']}")
             continue
 
-        c_arr = np.load(str(caffe_path))
+        caffe_arr = np.load(caffe_path)
+        row["caffe_shape"] = "x".join(str(s) for s in caffe_arr.shape)
 
-        if pytorch_path is not None and pytorch_path.exists():
-            p_arr = np.load(str(pytorch_path))
+        if not pytorch_path.exists():
+            row["status"] = "CAFFE_ONLY"
+            rows.append(row)
+            print(
+                f"{label:<18} {row['caffe_shape']:<18} {'-':<18} "
+                f"{'-':<12} {'-':<12} {'-':<12} {row['status']}"
+            )
+            continue
 
-            # Try to match shapes — may need transpose/reshape
-            if c_arr.shape != p_arr.shape:
-                # Caffe is (N, C, H, W), PyTorch is same — might be close but not identical
-                sim = -3.0  # shape mismatch
-                rmse = -3.0
-                status = f"SHAPE ({c_arr.shape} vs {p_arr.shape})"
-            else:
-                sim = cosine_sim(c_arr, p_arr)
-                rmse = relative_mse(c_arr, p_arr)
-                status = "PASS" if sim >= args.tol else f"LOW ({sim:.4f})"
-                statuses.append(sim >= args.tol)
+        pytorch_arr = np.load(pytorch_path)
+        row["pytorch_shape"] = "x".join(str(s) for s in pytorch_arr.shape)
 
-            c_str = "×".join(str(s) for s in c_arr.shape)
-            p_str = "×".join(str(s) for s in p_arr.shape)
-            print(f"{caffe_name:<22} {c_str:<20} {p_str:<20} {sim:<10.4f} {rmse:<10.6f} {status}")
+        if caffe_arr.shape != pytorch_arr.shape:
+            row["status"] = "SHAPE_MISMATCH"
+            rows.append(row)
+            print(
+                f"{label:<18} {row['caffe_shape']:<18} {row['pytorch_shape']:<18} "
+                f"{'-':<12} {'-':<12} {'-':<12} {row['status']}"
+            )
+            continue
+
+        metrics = compare_arrays(caffe_arr, pytorch_arr)
+        status = "PASS" if metrics["cosine"] >= args.tol else f"LOW_{metrics['cosine']:.4f}"
+        row.update(metrics)
+        row["status"] = status
+        rows.append(row)
+        comparable_statuses.append(status == "PASS")
+        print(
+            f"{label:<18} {row['caffe_shape']:<18} {row['pytorch_shape']:<18} "
+            f"{metrics['cosine']:<12.9f} {metrics['rel_l2']:<12.6g} "
+            f"{metrics['mean_abs']:<12.6g} {status}"
+        )
+
+    print("-" * 105)
+
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames: list[str] = []
+        for row in rows:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        with args.out.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"Wrote CSV: {args.out}")
+
+    if comparable_statuses:
+        passed = sum(comparable_statuses)
+        total = len(comparable_statuses)
+        print(f"\nAlignment: {passed}/{total} comparable layers passed (cos >= {args.tol})")
+        if passed == total:
+            print("PASS: comparable layers are aligned. Fisher/PCA comparison can proceed if those blobs exist.")
         else:
-            # Caffe-only blob (e.g. Fisher layers), print info
-            c_str = "×".join(str(s) for s in c_arr.shape)
-            label = desc or caffe_name
-            print(f"{caffe_name:<22} {c_str:<20} {'—':<20} {'—':<10} {'—':<10} {'CAFFE_ONLY'}")
-
-    print("-" * 90)
-    if statuses:
-        n_pass = sum(statuses)
-        n_total = len(statuses)
-        print(f"\nBackbone alignment: {n_pass}/{n_total} layers passed (cos ≥ {args.tol})")
-        if n_pass == n_total:
-            print("✓ Backbone is aligned! Fisher layer comparison can proceed.")
-        else:
-            print("✗ Backbone misalignment detected. Investigate preprocessing.")
+            print("FAIL: inspect the first low layer.")
     else:
-        print("No alignable layers found. Check blob names and paths.")
+        print("No comparable layers found. Check blob names and paths.")
 
 
 if __name__ == "__main__":

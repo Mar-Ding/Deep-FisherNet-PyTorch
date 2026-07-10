@@ -36,6 +36,11 @@ scripts/setup_step2.py
 scripts/visualize_patches.py
 scripts/watchdog.py
 scripts/run_vgg16_robust.py
+scripts/g4?_*.py
+scripts/g5_*.py
+scripts/g8b_*.py
+scripts/g9_*.py
+scripts/g11_*.py
 
 # Internal handoff / logs in reports
 reports/handoff_4090.md
@@ -43,6 +48,22 @@ reports/remote_setup_log.txt
 reports/remote_status.txt
 reports/reproduction_diagnosis_and_4090_plan.md
 reports/*.log
+reports/caffe_alignment_runbook.md
+
+# Build artifacts
+build/
+
+# Debug alignment dumps
+debug_align/
+
+# Report PDF (regenerated from markdown)
+deep_fishernet_report.pdf
+
+# Untracked experiment tarballs
+outputs/*.tar.gz
+
+# Official Caffe code tarball (use submodule instead)
+external/official-fishernet.tar.gz
 
 # IDE
 .vscode/
