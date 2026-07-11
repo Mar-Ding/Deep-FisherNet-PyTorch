@@ -151,6 +151,95 @@ PRESETS: dict[str, dict[str, Any]] = {
         "lr_gamma": 0.1,
         "image_size": 224,
     },
+    "stage1-vgg16-paper-final": {
+        "backbone": "vgg16",
+        "epochs": 60,
+        "batch_size": 32,
+        "optimizer": "sgd",
+        "backbone_lr": 1e-3,
+        "classifier_lr": 1e-2,
+        "classifier_bias_lr": 2e-2,
+        "momentum": 0.9,
+        "weight_decay": 5e-4,
+        "caffe_param_rules": True,
+        "max_steps": 9000,
+        "lr_step_iterations": [3000, 6000],
+        "disable_epoch_lr_scheduler": True,
+        "val_every_epochs": 10,
+        "image_size": 224,
+        "resize_mode": "square",
+        "hflip_prob": 0.5,
+        "label_source": "classification",
+        "ap_mode": "voc2007",
+        "loss_normalization": "batch",
+        "paper_new_layer_init": True,
+        "seed": 7,
+    },
+    "vgg16-paper-final": {
+        "backbone": "vgg16",
+        "epochs": 16,
+        "batch_size": 2,
+        "optimizer": "sgd",
+        "lr": 1e-3,
+        "backbone_lr": 1e-4,
+        "classifier_lr": 1e-3,
+        "classifier_bias_lr": 2e-3,
+        # Paper Stage 2 rates; Caffe's multiclass sigmoid loss scales gradients
+        # by both batch size and channel count (see loss_normalization below).
+        "fisher_lr": 1e-1,
+        "fisher_bias_lr": 2e-1,
+        "momentum": 0.9,
+        "weight_decay": 5e-4,
+        "caffe_param_rules": True,
+        "grad_accum_steps": 1,
+        "max_steps": 40000,
+        "disable_epoch_lr_scheduler": True,
+        "val_every_epochs": 16,
+        "image_size": 688,
+        "resize_mode": "longest",
+        "train_scales": [480, 576, 688, 864, 1200],
+        "test_scales": [480, 576, 688, 864, 1200],
+        "test_flip": False,
+        "hflip_prob": 0.5,
+        "patch_sizes": [64, 96, 128, 160, 192, 224, 256],
+        "patch_stride": 32,
+        "max_patches": 800,
+        "patch_coordinate_frame": "original",
+        "patch_coordinate_mode": "caffe",
+        "patch_pooling": "roi_pool",
+        "patch_l2_norm": False,
+        "patch_dim": 256,
+        "num_components": 32,
+        "roi_output_size": 7,
+        "learn_priors": False,
+        # The paper LR applies to Caffe's fused y = weight*x + bias parameters.
+        # Keeping bias=-mean (legacy) multiplies its effective update by 1/sigma.
+        "fisher_parameterization": "caffe",
+        "fisher_caffe_backward_compat": True,
+        "fisher_include_log_det": False,
+        "fisher_scale_by_prior": False,
+        "fisher_pooling": "mean",
+        "no_fisher_power_norm": True,
+        "no_fisher_l2_norm": True,
+        "fisher_second_order_scale": 0.7071067811865476,
+        "fisher_assignment_sigma_scale": 1.0,
+        "fisher_assignment_temperature": 1.0,
+        "paper_new_layer_init": True,
+        "label_source": "classification",
+        "ap_mode": "voc2007",
+        # Match MulticlassSigmoidCrossEntropyLoss::Backward_cpu in the released
+        # Caffe fork. Its displayed loss divides by batch, but its gradient also
+        # divides by the class/channel count.
+        "loss_normalization": "elements",
+        "svm_C": 1.0,
+        "svm_solver": "liblinear",
+        "svm_max_iter": 10000,
+        "svm_tol": 1e-4,
+        "svm_fit_intercept": False,
+        "svm_normalize_per_view": True,
+        "no_standardize": True,
+        "seed": 7,
+    },
     "official-res101-like": {
         "backbone": "resnet101",
         "epochs": 10,
@@ -235,6 +324,23 @@ PRESETS: dict[str, dict[str, Any]] = {
         "pca_l2_caffe_backward": True,
     },
 }
+
+# Preserve the paper-aligned model/data path while correcting the optimizer
+# dynamics exposed by G14: Caffe averages eight micro-batches per update and
+# decays the learning rate before a long high-LR run can destroy the FV.
+PRESETS["vgg16-paper-stable"] = deepcopy(PRESETS["vgg16-paper-final"])
+PRESETS["vgg16-paper-stable"].update(
+    {
+        "epochs": 8,
+        "grad_accum_steps": 8,
+        "max_steps": 2500,
+        "lr_step_iterations": [1000, 2000],
+        "lr_gamma": 0.1,
+        "disable_epoch_lr_scheduler": True,
+        "val_every_epochs": 1,
+        "save_every_epochs": 1,
+    }
+)
 
 
 def apply_preset(args: Namespace) -> Namespace:

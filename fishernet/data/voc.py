@@ -7,11 +7,12 @@ from typing import Any
 import torch
 from PIL import Image
 from torch import Tensor
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision.datasets import VOCDetection
 from torchvision.transforms import functional as TF
 
-from .patches import make_dense_patch_boxes
+from .patches import make_dense_patch_boxes, transform_patch_boxes
 
 
 PASCAL_CLASSES = (
@@ -37,6 +38,44 @@ PASCAL_CLASSES = (
     "tvmonitor",
 )
 CLASS_TO_INDEX = {name: idx for idx, name in enumerate(PASCAL_CLASSES)}
+
+
+class VOCClassificationLabelStore:
+    """Read VOC classification labels, preserving difficult examples as -1."""
+
+    def __init__(self, root: str | Path, year: str, image_set: str) -> None:
+        root = Path(root)
+        candidates = (
+            root / "VOCdevkit" / f"VOC{year}",
+            root / f"VOC{year}",
+            root,
+        )
+        voc_root = next(
+            (candidate for candidate in candidates if (candidate / "ImageSets" / "Main").is_dir()),
+            None,
+        )
+        if voc_root is None:
+            raise FileNotFoundError(f"Could not locate VOC{year}/ImageSets/Main below {root}")
+
+        self._labels: dict[str, Tensor] = {}
+        main_dir = voc_root / "ImageSets" / "Main"
+        for class_idx, class_name in enumerate(PASCAL_CLASSES):
+            label_path = main_dir / f"{class_name}_{image_set}.txt"
+            if not label_path.is_file():
+                raise FileNotFoundError(label_path)
+            for line in label_path.read_text(encoding="ascii").splitlines():
+                image_id, raw_label = line.split()
+                labels = self._labels.setdefault(
+                    image_id, torch.full((len(PASCAL_CLASSES),), -1.0, dtype=torch.float32)
+                )
+                value = int(raw_label)
+                labels[class_idx] = 1.0 if value > 0 else (0.0 if value < 0 else -1.0)
+
+    def __getitem__(self, image_id: str) -> Tensor:
+        key = Path(image_id).stem
+        if key not in self._labels:
+            raise KeyError(f"No VOC classification labels for image {key}")
+        return self._labels[key].clone()
 
 
 def resize_image(
@@ -102,6 +141,9 @@ class VOCClassification(Dataset):
         patch_stride: int = 64,
         max_patches: int = 160,
         resize_mode: str = "square",
+        patch_coordinate_frame: str = "resized",
+        patch_coordinate_mode: str = "half_open",
+        label_source: str = "xml",
         download: bool = False,
     ) -> None:
         self.dataset = VOCDetection(
@@ -118,6 +160,19 @@ class VOCClassification(Dataset):
         self.patch_stride = patch_stride
         self.max_patches = max_patches
         self.resize_mode = resize_mode
+        if patch_coordinate_frame not in {"resized", "original"}:
+            raise ValueError("patch_coordinate_frame must be 'resized' or 'original'")
+        if patch_coordinate_mode not in {"half_open", "caffe"}:
+            raise ValueError("patch_coordinate_mode must be 'half_open' or 'caffe'")
+        if label_source not in {"xml", "classification"}:
+            raise ValueError("label_source must be 'xml' or 'classification'")
+        self.patch_coordinate_frame = patch_coordinate_frame
+        self.patch_coordinate_mode = patch_coordinate_mode
+        self.label_store = (
+            VOCClassificationLabelStore(root, year, image_set)
+            if label_source == "classification"
+            else None
+        )
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -125,33 +180,55 @@ class VOCClassification(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         image, target = self.dataset[index]
         image = image.convert("RGB")
+        original_width, original_height = image.size
 
-        # Training mode: multi-scale augmentation
+        boxes = None
+        if self.patch_coordinate_frame == "original":
+            boxes = make_dense_patch_boxes(
+                height=original_height,
+                width=original_width,
+                patch_sizes=self.patch_sizes,
+                stride=self.patch_stride,
+                max_patches=self.max_patches,
+                coordinate_mode=self.patch_coordinate_mode,
+            )
+
         if self.train_scales is not None:
             image_size = random.choice(self.train_scales)
-            image = resize_image(image, image_size, self.resize_mode)
-            if self.hflip_prob > 0 and random.random() < self.hflip_prob:
-                image = TF.hflip(image)
         else:
             image_size = self.image_size
-            image = resize_image(image, image_size, self.resize_mode)
+        image = resize_image(image, image_size, self.resize_mode)
+        flipped = self.hflip_prob > 0 and random.random() < self.hflip_prob
+        if flipped:
+            image = TF.hflip(image)
 
         width, height = image.size
         tensor = tensorise_and_normalise(image)
 
-        labels = self._multi_hot(target)
-        boxes = make_dense_patch_boxes(
-            height=height,
-            width=width,
-            patch_sizes=self.patch_sizes,
-            stride=self.patch_stride,
-            max_patches=self.max_patches,
-        )
+        image_id = target["annotation"]["filename"]
+        labels = self.label_store[image_id] if self.label_store is not None else self._multi_hot(target)
+        if boxes is None:
+            boxes = make_dense_patch_boxes(
+                height=height,
+                width=width,
+                patch_sizes=self.patch_sizes,
+                stride=self.patch_stride,
+                max_patches=self.max_patches,
+                coordinate_mode=self.patch_coordinate_mode,
+            )
+        else:
+            boxes = transform_patch_boxes(
+                boxes,
+                source_hw=(original_height, original_width),
+                target_hw=(height, width),
+                horizontal_flip=flipped,
+                coordinate_mode=self.patch_coordinate_mode,
+            )
         return {
             "image": tensor,
             "labels": labels,
             "boxes": boxes,
-            "image_id": target["annotation"]["filename"],
+            "image_id": image_id,
             "image_hw": (height, width),
             "test_scales": self.test_scales,  # None for training, tuple for eval
         }
@@ -170,9 +247,19 @@ class VOCClassification(Dataset):
 
 
 def collate_voc_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    max_height = max(sample["image"].shape[-2] for sample in batch)
+    max_width = max(sample["image"].shape[-1] for sample in batch)
+    images = [
+        F.pad(
+            sample["image"],
+            (0, max_width - sample["image"].shape[-1], 0, max_height - sample["image"].shape[-2]),
+        )
+        for sample in batch
+    ]
     return {
-        "images": torch.stack([sample["image"] for sample in batch], dim=0),
+        "images": torch.stack(images, dim=0),
         "labels": torch.stack([sample["labels"] for sample in batch], dim=0),
         "boxes": [sample["boxes"] for sample in batch],
         "image_ids": [sample["image_id"] for sample in batch],
+        "image_hw": [sample["image_hw"] for sample in batch],
     }

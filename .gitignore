@@ -11,13 +11,15 @@ outputs/
 # Logs
 *.log
 
-# Temporary
+# Temporary / cache
 tmp/
 __pycache__/
+.pytest_cache/
 *.pyc
 .DS_Store
 
 # Internal agent artifacts (not for public/professor)
+.agents/
 AGENT_*
 4090_training_plan.md
 training_status.md
@@ -25,6 +27,10 @@ training_strategy_comparison.md
 
 # Paper PDF (separately downloadable)
 1608.00182.pdf
+
+# Archive / historical (not part of final submission)
+reports/archive/
+scripts/archive/
 
 # Debug/experimental scripts (not core)
 create_frozen_ckpt.py

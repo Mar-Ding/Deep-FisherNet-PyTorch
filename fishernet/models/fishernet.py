@@ -5,7 +5,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 from torchvision.models import AlexNet_Weights, ResNet101_Weights, VGG16_Weights, alexnet, resnet101, vgg16
-from torchvision.ops import roi_align
+from torchvision.ops import roi_align, roi_pool
 
 from .fisher_layer import FisherLayer
 
@@ -165,6 +165,9 @@ class VGG16FisherNet(nn.Module):
         pretrained: bool = True,
         learn_priors: bool = False,
         roi_output_size: int = 7,
+        patch_pooling: str = "roi_align",
+        patch_l2_norm: bool = True,
+        paper_new_layer_init: bool = False,
         fisher_kwargs: Optional[dict] = None,
     ) -> None:
         super().__init__()
@@ -173,6 +176,10 @@ class VGG16FisherNet(nn.Module):
         # Remove last MaxPool2d (pool5) so spatial stride is 1/16 instead of 1/32
         self.features = base.features[:-1]
         self.roi_output_size = roi_output_size
+        if patch_pooling not in {"roi_align", "roi_pool"}:
+            raise ValueError("patch_pooling must be 'roi_align' or 'roi_pool'")
+        self.patch_pooling = patch_pooling
+        self.patch_l2_norm = patch_l2_norm
 
         # fc6, fc7, then dimension-reduction head
         self.patch_mlp = nn.Sequential(
@@ -192,6 +199,11 @@ class VGG16FisherNet(nn.Module):
             **(fisher_kwargs or {}),
         )
         self.classifier = nn.Linear(self.fisher.output_dim, num_classes)
+        if paper_new_layer_init:
+            nn.init.normal_(self.patch_mlp[6].weight, mean=0.0, std=0.01)
+            nn.init.zeros_(self.patch_mlp[6].bias)
+            nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
+            nn.init.zeros_(self.classifier.bias)
 
     def forward(
         self,
@@ -208,21 +220,30 @@ class VGG16FisherNet(nn.Module):
 
     def extract_patch_features(self, images: Tensor, boxes: List[Tensor]) -> tuple[Tensor, Tensor]:
         conv = self.features(images)
-        rois = AlexNetFisherNet._make_feature_rois(
-            boxes, images.shape[-2:], conv.shape[-2:], images.device
-        )
-        if rois.numel() == 0:
+        if not any(image_boxes.numel() for image_boxes in boxes):
             raise ValueError("at least one patch box is required")
-        pooled = roi_align(
-            conv,
-            rois,
-            output_size=(self.roi_output_size, self.roi_output_size),
-            spatial_scale=1.0,
-            sampling_ratio=-1,
-            aligned=True,
-        )
+        if self.patch_pooling == "roi_pool":
+            pooled = roi_pool(
+                conv,
+                [image_boxes.to(device=images.device, dtype=torch.float32) for image_boxes in boxes],
+                output_size=(self.roi_output_size, self.roi_output_size),
+                spatial_scale=1.0 / 16.0,
+            )
+        else:
+            rois = AlexNetFisherNet._make_feature_rois(
+                boxes, images.shape[-2:], conv.shape[-2:], images.device
+            )
+            pooled = roi_align(
+                conv,
+                rois,
+                output_size=(self.roi_output_size, self.roi_output_size),
+                spatial_scale=1.0,
+                sampling_ratio=-1,
+                aligned=True,
+            )
         patch_features = self.patch_mlp(torch.flatten(pooled, 1))
-        patch_features = F.normalize(patch_features, p=2, dim=1)
+        if self.patch_l2_norm:
+            patch_features = F.normalize(patch_features, p=2, dim=1)
 
         counts = [b.shape[0] for b in boxes]
         max_count = max(counts)
@@ -236,6 +257,35 @@ class VGG16FisherNet(nn.Module):
             mask[batch_idx, :count] = True
             start = end
         return batch_features, mask
+
+
+def load_stage1_weights(model: nn.Module, state_dict: dict[str, Tensor]) -> list[tuple[str, str]]:
+    """Transfer Stage 1 conv, fc6, fc7, and 256-d reduction weights."""
+    model_state = model.state_dict()
+    loaded: list[tuple[str, str]] = []
+    for source_key, value in state_dict.items():
+        if source_key.startswith("features.") and source_key in model_state:
+            if value.shape == model_state[source_key].shape:
+                model_state[source_key] = value
+                loaded.append((source_key, source_key))
+
+    classifier_map = {
+        "classifier.1.weight": "patch_mlp.0.weight",
+        "classifier.1.bias": "patch_mlp.0.bias",
+        "classifier.4.weight": "patch_mlp.3.weight",
+        "classifier.4.bias": "patch_mlp.3.bias",
+        "classifier.7.weight": "patch_mlp.6.weight",
+        "classifier.7.bias": "patch_mlp.6.bias",
+    }
+    for source_key, destination_key in classifier_map.items():
+        if source_key not in state_dict or destination_key not in model_state:
+            continue
+        value = state_dict[source_key]
+        if value.shape == model_state[destination_key].shape:
+            model_state[destination_key] = value
+            loaded.append((source_key, destination_key))
+    model.load_state_dict(model_state)
+    return loaded
 
 
 class ResNetFisherNet(nn.Module):
@@ -432,6 +482,9 @@ def build_fishernet(
     fisher_assignment_sigma_scale: float = 1.0,
     fisher_assignment_temperature: float = 1.0,
     pca_l2_caffe_backward: bool = False,
+    patch_pooling: str = "roi_align",
+    patch_l2_norm: bool = True,
+    paper_new_layer_init: bool = False,
 ) -> nn.Module:
     fisher_kwargs = {
         "parameterization": fisher_parameterization,
@@ -463,6 +516,9 @@ def build_fishernet(
             pretrained=pretrained,
             learn_priors=learn_priors,
             roi_output_size=7 if roi_output_size is None else roi_output_size,
+            patch_pooling=patch_pooling,
+            patch_l2_norm=patch_l2_norm,
+            paper_new_layer_init=paper_new_layer_init,
             fisher_kwargs=fisher_kwargs,
         )
     if backbone == "resnet101":

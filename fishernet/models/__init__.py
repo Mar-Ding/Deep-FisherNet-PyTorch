@@ -5,6 +5,7 @@ from .fishernet import (
     ResNetFisherNet,
     VGG16FisherNet,
     build_fishernet,
+    load_stage1_weights,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "ResNetFisherNet",
     "ResNet101SpatialFisherNet",
     "build_fishernet",
+    "load_stage1_weights",
 ]

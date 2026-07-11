@@ -1,10 +1,19 @@
-# Deep FisherNet 复现与实验报告
-
-> 本文件保留为工程过程稿。正式提交版本位于 [`结果/deep_fishernet_complete_exploration_report.md`](../结果/deep_fishernet_complete_exploration_report.md)。
+# Deep FisherNet for Object Classification：PyTorch 复现与实验报告
 
 ## 1. 任务目标与结果概览
 
-考核任务是将论文 **Deep FisherNet for Object Classification** 从 Caffe 复现到 PyTorch，并在 PASCAL VOC2007 上逼近论文报告的 **91.2% mAP**。
+> **考核要求：**使用 PyTorch 实现论文 *Deep FisherNet for Object Classification*，并在 PASCAL VOC2007 上完成训练、测试和实验报告。
+
+本项目按照上述要求完成了 PyTorch 模型实现、VOC2007 训练和全量测试。论文报告的结果为 91.2% mAP，本项目当前完整 FisherNet 最佳结果为 85.99% mAP，未完全达到论文指标。报告不仅记录最终结果，也保留了从 Caffe 迁移、逐层对齐、问题诊断到最终改进的完整实验依据。
+
+| 考核内容 | 完成情况 | 说明 |
+|---|:---:|---|
+| PyTorch 实现 Deep FisherNet | 完成 | 包含 dense patch、PCA/GMM、可微 Fisher Vector 和分类器 |
+| PASCAL VOC2007 训练 | 完成 | 使用 trainval 5011 张图像完成 Stage 1/Stage 2 训练与消融 |
+| PASCAL VOC2007 测试 | 完成 | 使用 test 4952 张图像进行全量 FV+SVM 评估 |
+| Caffe/PyTorch 对齐 | 完成 | 初始化态 Fisher 前向 12/12 个可比较层通过 |
+| 实验报告与结果文件 | 完成 | 保存报告、最佳指标、日志、脚本和模型检查点 |
+| 论文 91.2% 指标 | 未完全达到 | 当前最佳 85.99%，绝对差距 5.21 个 mAP 点 |
 
 | 项目 | 结果 |
 |---|---:|
@@ -28,7 +37,7 @@
 
 ### 整体思路
 
-​	整体路线是先建立可用基线，再进行 Caffe/PyTorch 对齐，随后围绕公式、backbone、初始化、训练、SVM 和权重迁移逐项排查。初版 PyTorch 结果与论文有差距后，我编译并运行官方 Caffe 工程，在统一输入上逐层比较两个版本；先排除实现错误，再通过健康度诊断检查 Fisher assignment、参数漂移和训练稳定性。实验过程中保留有效和无效结果，用门控实验筛选方向，最后统一使用全量 VOC2007 test 确认。
+整体路线是先建立可用基线，再进行 Caffe/PyTorch 对齐，随后围绕公式、backbone、初始化、训练、SVM 和权重迁移逐项排查。初版 PyTorch 结果与论文有差距后，我编译并运行官方 Caffe 工程，在统一输入上逐层比较两个版本；先排除实现错误，再通过健康度诊断检查 Fisher assignment、参数漂移和训练稳定性。实验过程中保留有效和无效结果，用门控实验筛选方向，最后统一使用全量 VOC2007 test 确认。
 
 工程以 VGG16 corrected-patches 为论文复现主线，以 ResNet101 spatial Fisher 作为诊断支线。下面按实验顺序说明具体过程。
 
@@ -548,4 +557,4 @@ G15-C 使用 G15-A 的 VGG16 + Fisher Vector 检查点，在 VOC2007 trainval 50
 
 8. **部分现象只能通过实验间接判断。** 例如 GMM 初始化、assignment temperature、sigma scale 和 prior mode 会共同影响 Fisher 分配。实验可以证明某种配置在当前数据和实现下更好，但无法在缺少官方参数的情况下证明它就是论文中使用的唯一配置。因此报告中的结论应理解为当前工程的实验判断，而不是对官方实现细节的完全还原。
 
-​	这次尝试基本完成了从 Caffe 自定义层到 PyTorch FisherNet 的主要结构和数值对齐，并通过多组消融实验定位了 backbone、BatchNorm、assignment、分类器和训练流程的影响。由于原始项目年代较早、资料来源单一，当前 85.99% 更准确的表述是“基于公开代码和论文信息完成的工程复现与改进”，而不是对论文训练环境的一比一复刻。这也是结果仍未达到论文 91.2% 的主要限制。
+这次尝试基本完成了从 Caffe 自定义层到 PyTorch FisherNet 的主要结构和数值对齐，并通过多组消融实验定位了 backbone、BatchNorm、assignment、分类器和训练流程的影响。由于原始项目年代较早、资料来源单一，当前 85.99% 更准确的表述是“基于公开代码和论文信息完成的工程复现与改进”，而不是对论文训练环境的一比一复刻。这也是结果仍未达到论文 91.2% 的主要限制。
